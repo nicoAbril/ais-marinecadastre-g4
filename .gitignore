@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.databricks/
+.ipynb_checkpoints/
+.DS_Store
+
+.databricks
+
+# Datos descargados en pruebas locales
+notebooks/Volumes/
+*.zip
+*.csv
