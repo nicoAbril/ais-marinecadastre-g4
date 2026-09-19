@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # 01 - Ingesta AIS (MarineCadastre)
 # MAGIC
@@ -10,6 +14,7 @@
 # MAGIC 3. Descompresión de los CSV en el Volume.
 
 # COMMAND ----------
+
 import os
 import time
 import requests
@@ -22,6 +27,7 @@ try:
 except NameError:
     from databricks.connect import DatabricksSession
     spark = DatabricksSession.builder.profile("uniandes").serverless(True).getOrCreate()
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -41,6 +47,7 @@ ZIP_PATH = 'zips'
 CSV_PATH = 'csvs'
 
 # COMMAND ----------
+
 # Creación de catalogo del proyecto y volumen de volcado de datos crudos
 spark.sql(
     f"""
@@ -74,6 +81,7 @@ spark.sql(
 # MAGIC - `unzip_day`: extrae el CSV en `csvs/`; si ya existe, no hace nada.
 
 # COMMAND ----------
+
 # Descarga de datos y descompresión
 VOLUME_BASE = os.path.join('/Volumes',CATALOG, RAW_SCHEMA, AIS_VOLUME)
 ZIPS_DIR = os.path.join(VOLUME_BASE, ZIP_PATH)
@@ -130,6 +138,7 @@ def unzip_day(d, zips_dir = ZIPS_DIR, csv_dir = CSV_DIR):
 # MAGIC ### Ejecución para el rango de fechas
 
 # COMMAND ----------
+
 start_date = datetime.strptime('2023-06-01', '%Y-%m-%d').date()
 end_date = datetime.strptime('2023-06-07', '%Y-%m-%d').date()
 n_days = (end_date-start_date).days+1
