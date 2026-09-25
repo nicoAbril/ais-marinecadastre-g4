@@ -1,5 +1,4 @@
 # Databricks notebook source
-# COMMAND ----------
 try:
     spark
 except NameError:
@@ -14,6 +13,7 @@ from pyspark.sql import Window
 
 
 # COMMAND ----------
+
 CATALOG = 'oceanwatch'
 RAW_SCHEMA = 'raw'
 AIS_VOLUME = 'ais_files'
@@ -26,9 +26,11 @@ CSV_DIR = os.path.join(VOLUME_BASE, CSV_PATH)
 ZIPS_DIR = os.path.join(VOLUME_BASE, ZIP_PATH)
 
 # COMMAND ----------
+
 print(f"{VOLUME_BASE}")
 
 # COMMAND ----------
+
 ais_schema = StructType([
     StructField("MMSI", StringType(), True),
     StructField("BaseDateTime", TimestampType(), True),
@@ -209,6 +211,7 @@ w_viaje_acum = (
     .rowsBetween(Window.unboundedPreceding, Window.currentRow)
 )
 
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -225,6 +228,7 @@ w_viaje_acum = (
 # MAGIC   Resultado: 3.0 horas, como se esperaba de la diferencia exacta entre ambos timestamps.
 # MAGIC
 # MAGIC Con ambas fórmulas confirmadas, se aplican directamente sobre `df_silver_base` a continuación.
+# MAGIC
 
 # COMMAND ----------
 
@@ -450,3 +454,83 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Da
 
 print(f"Tabla {CATALOG}.silver.vessel_types creada: {df_catalogo_completo.count():,} tipos.")
 display(df_catalogo_completo.limit(5))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Pregunta 3
+
+# COMMAND ----------
+
+# =====================================================================
+# CAPA GOLD: TOP 10 BUQUES POR DISTANCIA SEMANAL (CONSOLIDADO POR MMSI)
+# =====================================================================
+
+df_top_viajeros = (
+    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
+
+    # 1. Excluimos MMSIs defectuosos o genéricos
+    .filter(f.col("MMSI_Anomalo") == False)
+
+    # 2. Agrupamos por la entidad física (MMSI) para unir todos los H3_Macro que cruzó
+    .groupBy("MMSI")
+    .agg(
+        f.first("VesselName", ignorenulls=True).alias("VesselName"),
+        f.first("VesselType", ignorenulls=True).alias("VesselType"),
+        f.round(f.sum("distancia_segmento_nm"), 2).alias("Distancia_Total_Millas"),
+        f.round(
+            f.avg(f.when(f.col("velocidad_implicita_nudos") > 0.5, f.col("velocidad_implicita_nudos"))),
+            2
+        ).alias("Velocidad_Crucero_Prom_Nudos"),
+        f.countDistinct("H3_Macro").alias("Hexagonos_Macro_Atravesados"),
+        f.count("*").alias("Total_Tramos_Calculados")
+    )
+
+    # 3. Enriquecimiento con el catálogo de tipos de buque
+    .join(df_catalogo_completo, "VesselType", "left")
+
+    # 4. Ordenamiento y selección del Top 10
+    .orderBy(f.desc("Distancia_Total_Millas"))
+    .limit(10)
+    .select(
+        "MMSI",
+        "VesselName",
+        "Descripcion_Tipo",
+        "Distancia_Total_Millas",
+        "Velocidad_Crucero_Prom_Nudos",
+        "Hexagonos_Macro_Atravesados",
+        "Total_Tramos_Calculados"
+    )
+)
+
+print("Top 10 Buques con mayor distancia recorrida (Con Candado Cinemático y Reconexión H3):")
+display(df_top_viajeros)
+
+# COMMAND ----------
+
+# MMSI del "Pleasure Craft" con distancia irreal
+mmsi_sospechoso = "367638030"
+
+df_diagnostico_gps = (
+    # Leemos directamente de la tabla en tu capa Silver
+    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
+    .filter(f.col("MMSI") == mmsi_sospechoso)
+    .select(
+        "MMSI_Real",
+        "MMSI",
+        "IMO",
+        "heading",
+        "status",
+        "VesselType",
+        "VesselName",
+        "BaseDateTime",
+        "LAT",
+        "LON",
+        "distancia_segmento_nm",
+        "SOG"
+    )
+    .orderBy("BaseDateTime")
+    .limit(10000)
+)
+
+display(df_diagnostico_gps)
