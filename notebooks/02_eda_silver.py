@@ -180,14 +180,124 @@ display(
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Arquitectura de la Capa Silver: Motor de Reconstrucción de Trayectorias y Resolución de Entidades
+# MAGIC
+# MAGIC Este bloque de transformación convierte la telemetría AIS cruda —una secuencia ruidosa de
+# MAGIC eventos puntuales— en una capa **Silver** de segmentos de navegación validados físicamente
+# MAGIC (`df_silver_final`). Para resolver los dos grandes problemas del dominio marítimo (la colisión
+# MAGIC o suplantación de identificadores `MMSI` y los saltos incoherentes de GPS), el pipeline opera
+# MAGIC bajo una arquitectura de aislamiento y validación en cuatro etapas secuenciales:
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### 1. Saneamiento de protocolo, geometría y etiquetado no destructivo
+# MAGIC Antes de evaluar el movimiento de las embarcaciones, se depuran los errores de transmisión y
+# MAGIC de sensores sobre `df_silver_base`:
+# MAGIC
+# MAGIC * **Validación cartográfica y de unicidad temporal:** se restringen las coordenadas a los
+# MAGIC   límites geométricos terrestres (`LAT` entre -90° y 90°; `LON` entre -180° y 180°) y se aplica
+# MAGIC   `dropDuplicates(["MMSI", "BaseDateTime"])`. Dado que una embarcación no puede estar en dos
+# MAGIC   lugares en el mismo segundo, esta llave natural elimina mensajes duplicados captados
+# MAGIC   simultáneamente por múltiples estaciones costeras o satelitales.
+# MAGIC * **Imputación de velocidad (`SOG`):** el valor `102.3` no es una velocidad real, sino el
+# MAGIC   código reservado del estándar AIS para "sensor no disponible", y valores por encima de 60
+# MAGIC   nudos son físicamente implausibles para buques convencionales. En vez de eliminar esas filas
+# MAGIC   con un filtro rígido —lo cual borraría coordenadas GPS válidas y abriría huecos artificiales
+# MAGIC   en la mitad de un viaje—, esos valores se imputan a `null`, preservando la continuidad
+# MAGIC   espacial de la traza.
+# MAGIC * **Auditoría suave del identificador (`MMSI_Anomalo`):** los registros cuyo `MMSI` es nulo o
+# MAGIC   incumple el estándar de 9 dígitos no se descartan en la capa Silver, sino que se marcan con
+# MAGIC   una bandera booleana. Muchos transpondedores tienen mal configurado su identificador estático
+# MAGIC   (ej. `000000000`), pero emiten trayectorias cinemáticas reales y valiosas para análisis
+# MAGIC   agregados de volumen de tráfico o mapas de calor. Conservarlos con una bandera delega a cada
+# MAGIC   pregunta de negocio la decisión de excluirlos únicamente cuando se necesite identidad
+# MAGIC   individual del buque.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### 2. Desambiguación espacial multiescala (Uber H3)
+# MAGIC Uno de los fallos más críticos en datos AIS ocurre cuando dos o más barcos en distintos océanos
+# MAGIC transmiten el mismo `MMSI` al mismo tiempo (*spoofing* o clonación de ID). Si se ordenara la
+# MAGIC tabla únicamente por `MMSI` y tiempo, la traza saltaría de un continente a otro en cada reporte
+# MAGIC (efecto *ping-pong*), destruyendo cualquier cálculo de distancia. Para neutralizarlo, el
+# MAGIC pipeline proyecta cada coordenada sobre la grilla hexagonal jerárquica **Uber H3** en dos
+# MAGIC resoluciones:
+# MAGIC
+# MAGIC * **Escala regional (`H3_Macro`, resolución 3):** asigna cada punto a un hexágono de gran
+# MAGIC   escala (~60 km de arista). Al concatenar el identificador original con este cuadrante
+# MAGIC   (`MMSI_Real = MMSI + H3_Macro`), se crea una **llave subrogada regional**: dos barcos con el
+# MAGIC   mismo `MMSI` que navegan en mares distintos quedan aislados en particiones lógicas
+# MAGIC   independientes.
+# MAGIC * **Escala táctica (`H3_Micro`, resolución 7):** asigna cada ubicación a un hexágono local
+# MAGIC   (~1.2 km de arista), usado para evaluar la contigüidad paso a paso del movimiento del barco.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### 3. Reconstrucción cinemática vectorizada (cursores de estado previo)
+# MAGIC Con las entidades aisladas por región, se definen dos ventanas particionadas por `MMSI_Real` y
+# MAGIC ordenadas cronológicamente por `BaseDateTime`: una de puntero simple (`w_viaje`) y una de marco
+# MAGIC físico acumulado (`w_viaje_acum`, con `rowsBetween`).
+# MAGIC
+# MAGIC * **Materialización del estado t-1 sin *self-joins*:** con `f.lag()` sobre `w_viaje`, se traen a
+# MAGIC   la fila actual (t) los atributos del reporte inmediatamente anterior (t-1): celda micro
+# MAGIC   (`prev_H3_Micro`), estampa de tiempo (`prev_time`) y coordenadas (`prev_LAT`, `prev_LON`).
+# MAGIC   Esto vectoriza los cálculos fila a fila sin cruzar la tabla consigo misma.
+# MAGIC * **Doble métrica espacial y delta temporal:** se calcula tanto la distancia topológica discreta
+# MAGIC   (`h3_distancia`, cuántos hexágonos de resolución 7 separan el punto anterior del actual) como
+# MAGIC   la distancia geodésica real sobre la esfera terrestre (`st_distancesphere` dividido entre
+# MAGIC   `1852` para convertir metros a millas náuticas). Se restan también las estampas de tiempo en
+# MAGIC   segundos epoch (`cast("long")`) y se dividen entre `3600` para obtener las horas transcurridas.
+# MAGIC * **El validador físico independiente (`velocidad_implicita_nudos`):** dividiendo la distancia
+# MAGIC   bruta entre las horas transcurridas se obtiene la velocidad media real que el barco tuvo que
+# MAGIC   desarrollar entre t-1 y t. Esta métrica audita la física del movimiento de forma independiente
+# MAGIC   al sensor: si un buque reporta un `SOG` normal de 12 nudos pero su GPS salta 80 millas en dos
+# MAGIC   minutos dentro de la misma macro-celda, la velocidad implícita se dispara por encima de los
+# MAGIC   2 000 nudos, dejando en evidencia la anomalía.
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### 4. Segmentación de viajes, candado cinemático y sesionización
+# MAGIC En el tramo final se corta la línea de tiempo continua de cada embarcación en viajes discretos
+# MAGIC y se blindan las distancias para que sean 100% sumables:
+# MAGIC
+# MAGIC * **Regla de corte (`Flag_Nuevo_Viaje`):** el primer registro histórico de cada partición
+# MAGIC   (`prev_H3_Micro` nulo) se inicializa en `0`. A partir del segundo punto, se levanta una bandera
+# MAGIC   (`1`) si se cumple cualquiera de tres anomalías o eventos operativos: (1) discontinuidad
+# MAGIC   topológica —salto mayor a 2 hexágonos `H3_Micro` sin reportes intermedios—, (2) silencio de
+# MAGIC   transmisión mayor a 12 horas (buque fondeado o en puerto), o (3) `velocidad_implicita_nudos`
+# MAGIC   superior al límite físico de 60 nudos.
+# MAGIC * **El candado cinemático (`distancia_segmento_nm`):** cuando se dispara un corte de viaje o una
+# MAGIC   velocidad implícita mayor a 60 nudos, la distancia de ese tramo se anula explícitamente a
+# MAGIC   `0.0`. La distancia entre el último punto de un viaje y el primero del siguiente (o un salto
+# MAGIC   por error de GPS) no es navegación real; anularla a cero garantiza que un `SUM` de
+# MAGIC   `distancia_segmento_nm` jamás sume saltos irreales.
+# MAGIC * **Generación de identificador de sesión (`Trip_ID`):** mediante una suma acumulada
+# MAGIC   (`f.sum("Flag_Nuevo_Viaje")`) sobre `w_viaje_acum`, cada vez que aparece un `1` se incrementa
+# MAGIC   el contador para todas las filas subsiguientes de esa partición (`0, 0, 0 -> 1, 1 -> 2, 2, 2`).
+# MAGIC
+# MAGIC > **Resultado:** el pipeline entrega una tabla enriquecida donde cada fila representa un vector
+# MAGIC > de navegación saneado y donde la combinación `(MMSI_Real, Trip_ID)` constituye la llave
+# MAGIC > compuesta única de cada viaje continuo, permitiendo tanto el análisis de rutas locales como la
+# MAGIC > posterior reconexión por `MMSI` en las preguntas de negocio.
+
+# COMMAND ----------
+
 # =====================================================================
 # FASE 1: LIMPIEZA BASE Y CREACIÓN DE ENTIDADES (df_silver_base)
 # =====================================================================
 df_silver_base = (
     df_ais
     # ─── A. LIMPIEZA FÍSICA Y DE HARDWARE ───
-    .filter(f.col("SOG") != 102.3)
-    .filter(f.col("SOG") <= 60)
+    # SOG inválido (102.3 = "no disponible" del estándar, o > 60 nudos) se imputa a null en vez de
+    # filtrar la fila completa: así se conserva la posición para los cálculos de trayectoria (H3,
+    # distancia) que dependen de la continuidad de la traza, y solo se pierde la velocidad puntual.
+    .withColumn("SOG",
+        f.when(
+            (f.col("SOG") == 102.3) | (f.col("SOG") > 60) | (f.col("SOG") < 0),
+            f.lit(None).cast("double")
+        ).otherwise(f.col("SOG"))
+    )
     .filter(f.col("LAT").between(-90, 90))
     .filter(f.col("LON").between(-180, 180))
     .dropDuplicates(["MMSI", "BaseDateTime"])
@@ -446,6 +556,11 @@ for i in range(90, 100): catalogo_dict[i] = f"Other Type - Type {i}"
 data_catalogo_completo = [(k, v) for k, v in catalogo_dict.items()]
 df_catalogo_completo = spark.createDataFrame(data_catalogo_completo, ["VesselType", "Descripcion_Tipo"])
 
+# Gobernanza (Requisito 5): VesselType debe compartir el mismo tipo en todas las tablas de la
+# capa plata. spark.createDataFrame infiere LongType a partir de enteros de Python; se castea a
+# IntegerType para que coincida con ais_cleaned.VesselType y evitar un cast implícito en cada join.
+df_catalogo_completo = df_catalogo_completo.withColumn("VesselType", f.col("VesselType").cast("int"))
+
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Datos AIS limpios y deduplicados'")
 
 (
@@ -458,83 +573,4 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Da
 
 print(f"Tabla {CATALOG}.silver.vessel_types creada: {df_catalogo_completo.count():,} tipos.")
 display(df_catalogo_completo.limit(5))
-
 # COMMAND ----------
-
-# MAGIC %md
-# MAGIC Pregunta 3
-
-# COMMAND ----------
-
-# =====================================================================
-# CAPA GOLD: TOP 10 BUQUES POR DISTANCIA SEMANAL (CONSOLIDADO POR MMSI)
-# =====================================================================
-
-df_top_viajeros = (
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-
-    # 1. Excluimos MMSIs defectuosos o genéricos
-    .filter(f.col("MMSI_Anomalo") == False)
-
-    # 2. Agrupamos por la entidad física (MMSI) para unir todos los H3_Macro que cruzó
-    .groupBy("MMSI")
-    .agg(
-        f.first("VesselName", ignorenulls=True).alias("VesselName"),
-        f.first("VesselType", ignorenulls=True).alias("VesselType"),
-        f.round(f.sum("distancia_segmento_nm"), 2).alias("Distancia_Total_Millas"),
-        f.round(
-            f.avg(f.when(f.col("velocidad_implicita_nudos") > 0.5, f.col("velocidad_implicita_nudos"))),
-            2
-        ).alias("Velocidad_Crucero_Prom_Nudos"),
-        f.countDistinct("H3_Macro").alias("Hexagonos_Macro_Atravesados"),
-        f.count("*").alias("Total_Tramos_Calculados")
-    )
-
-    # 3. Enriquecimiento con el catálogo de tipos de buque
-    .join(df_catalogo_completo, "VesselType", "left")
-
-    # 4. Ordenamiento y selección del Top 10
-    .orderBy(f.desc("Distancia_Total_Millas"))
-    .limit(10)
-    .select(
-        "MMSI",
-        "VesselName",
-        "Descripcion_Tipo",
-        "Distancia_Total_Millas",
-        "Velocidad_Crucero_Prom_Nudos",
-        "Hexagonos_Macro_Atravesados",
-        "Total_Tramos_Calculados"
-    )
-)
-
-print("Top 10 Buques con mayor distancia recorrida (Con Candado Cinemático y Reconexión H3):")
-display(df_top_viajeros)
-
-# COMMAND ----------
-
-# MMSI del "Pleasure Craft" con distancia irreal
-mmsi_sospechoso = "367638030"
-
-df_diagnostico_gps = (
-    # Leemos directamente de la tabla en tu capa Silver
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-    .filter(f.col("MMSI") == mmsi_sospechoso)
-    .select(
-        "MMSI_Real",
-        "MMSI",
-        "IMO",
-        "heading",
-        "status",
-        "VesselType",
-        "VesselName",
-        "BaseDateTime",
-        "LAT",
-        "LON",
-        "distancia_segmento_nm",
-        "SOG"
-    )
-    .orderBy("BaseDateTime")
-    .limit(10000)
-)
-
-display(df_diagnostico_gps)
