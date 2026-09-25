@@ -146,3 +146,48 @@ for i in range(n_days):
     d = start_date + timedelta(days=i)
     download_day(d)
     unzip_day(d)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Recurso de referencia: World Port Index
+# MAGIC
+# MAGIC Para la pregunta de negocio sobre concentración de tráfico se necesita cruzar las celdas
+# MAGIC espaciales con los puertos conocidos. Se usa el **World Port Index** (NGA Pub. 150), que
+# MAGIC publica la NGA en CSV con la posición y características de ~3 800 puertos del mundo.
+# MAGIC
+# MAGIC - **Fuente:** https://msi.nga.mil/Publications/WPI
+# MAGIC - **Descarga directa:** https://msi.nga.mil/api/publications/download?type=view&key=16920959/SFH00000/UpdatedPub150.csv
+# MAGIC
+# MAGIC Se descarga con el mismo criterio de reintentos e idempotencia que los zip de AIS, en la
+# MAGIC carpeta `reference/` del Volume.
+
+# COMMAND ----------
+
+REFERENCE_DIR = os.path.join(VOLUME_BASE, 'reference')
+WPI_URL = "https://msi.nga.mil/api/publications/download?type=view&key=16920959/SFH00000/UpdatedPub150.csv"
+WPI_PATH = os.path.join(REFERENCE_DIR, "world_port_index.csv")
+
+def download_reference_file(url, dest_path, retries = 3):
+    """Descarga un archivo de referencia (no zip) con reintentos. Si ya existe, no lo descarga de nuevo."""
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    if os.path.exists(dest_path):
+        return dest_path
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            with open(dest_path, "wb") as f:
+                f.write(response.content)
+            if os.path.getsize(dest_path) == 0:
+                raise ValueError(f"{os.path.basename(dest_path)} descargado vacío")
+            return dest_path
+        except (requests.RequestException, ValueError) as e:
+            print(f"Intento {attempt}/{retries} fallido para {os.path.basename(dest_path)}: {e}")
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+            if attempt == retries:
+                raise
+            time.sleep(2 * attempt)
+
+download_reference_file(WPI_URL, WPI_PATH)
