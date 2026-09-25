@@ -35,7 +35,8 @@ except NameError:
 # MAGIC
 # MAGIC Todo el proyecto vive en el catálogo `oceanwatch`. El esquema `raw` contiene el Volume
 # MAGIC `ais_files`, donde se guardan los archivos tal como se descargan:
-# MAGIC `zips/` con los zip originales y `csvs/` con los CSV descomprimidos.
+# MAGIC `positions/zips/` con los zip originales, `positions/csvs/` con los CSV descomprimidos y
+# MAGIC `reference/` con los catálogos de referencia (World Port Index).
 
 # COMMAND ----------
 
@@ -43,8 +44,9 @@ except NameError:
 CATALOG = 'oceanwatch'
 RAW_SCHEMA = 'raw'
 AIS_VOLUME = 'ais_files'
-ZIP_PATH = 'zips'
-CSV_PATH = 'csvs'
+POSITIONS_PATH = 'positions'
+ZIP_PATH = os.path.join(POSITIONS_PATH, 'zips')
+CSV_PATH = os.path.join(POSITIONS_PATH, 'csvs')
 
 # COMMAND ----------
 

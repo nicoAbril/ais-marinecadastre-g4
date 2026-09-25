@@ -17,8 +17,9 @@ from pyspark.sql import Window
 CATALOG = 'oceanwatch'
 RAW_SCHEMA = 'raw'
 AIS_VOLUME = 'ais_files'
-ZIP_PATH = 'zips'
-CSV_PATH = 'csvs'
+POSITIONS_PATH = 'positions'
+ZIP_PATH = os.path.join(POSITIONS_PATH, 'zips')
+CSV_PATH = os.path.join(POSITIONS_PATH, 'csvs')
 
 VOLUME_BASE = os.path.join('/Volumes',CATALOG, RAW_SCHEMA, AIS_VOLUME)
 CSV_DIR = os.path.join(VOLUME_BASE, CSV_PATH)
