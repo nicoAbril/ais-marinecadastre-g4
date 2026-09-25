@@ -209,6 +209,8 @@ w_viaje_acum = (
     .rowsBetween(Window.unboundedPreceding, Window.currentRow)
 )
 
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Validación de las fórmulas usadas en `df_silver_final`
 # MAGIC
@@ -396,50 +398,7 @@ display(df_wpi.limit(5))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Preguntas iniciales
-
-# COMMAND ----------
-
-# ──── Método 1: Conteo Exacto ────
-df_exacto = (
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-    .groupBy("Fecha")
-    .agg(f.countDistinct("MMSI_Real").alias("Conteo_Exacto"))
-    .orderBy("Fecha")
-)
-
-print("Calculando conteo exacto...")
-display(df_exacto)
-
-#print("\n--- Plan Físico (Exacto) ---")
-#df_exacto.explain()
-
-# COMMAND ----------
-
-# ──── Método 2: Conteo Aproximado (Sketches) ────
-df_aprox = (
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-    .groupBy("Fecha")
-    # rsd = 0.01 indica un error relativo máximo tolerado del 1%
-    .agg(f.approx_count_distinct("MMSI_Real", 0.001).alias("Conteo_Aproximado_1pct"))
-    .orderBy("Fecha")
-)
-
-print("Calculando conteo aproximado...")
-display(df_aprox)
-
-#print("\n--- Plan Físico (Aproximado) ---")
-#df_aprox.explain()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC Pregunta 2
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Fuente del catálogo de tipos de buque
+# MAGIC ## Tabla de referencia: catálogo de tipos de buque
 # MAGIC
 # MAGIC El diccionario `catalogo_dict` recrea en código las categorías del estándar AIS/NAIS
 # MAGIC (`VesselType`), tomadas de:
@@ -448,7 +407,9 @@ display(df_aprox)
 # MAGIC   https://coast.noaa.gov/data/marinecadastre/ais/VesselTypeCodes2018.pdf
 # MAGIC
 # MAGIC No se descarga el PDF al Volume porque no lo consume ningún paso del pipeline: solo se usó
-# MAGIC para construir manualmente el mapeo de códigos a categorías.
+# MAGIC para construir manualmente el mapeo de códigos a categorías. Se materializa como tabla en la
+# MAGIC capa plata para que las preguntas de negocio la lean igual que `world_port_index`, en vez de
+# MAGIC depender de una variable en memoria.
 
 # COMMAND ----------
 
@@ -477,106 +438,15 @@ for i in range(90, 100): catalogo_dict[i] = f"Other Type - Type {i}"
 data_catalogo_completo = [(k, v) for k, v in catalogo_dict.items()]
 df_catalogo_completo = spark.createDataFrame(data_catalogo_completo, ["VesselType", "Descripcion_Tipo"])
 
-# ──── 2. Procesamiento Analítico (Aprovechando Liquid Clustering) ────
-df_ais_silver = spark.read.table(f"{CATALOG}.silver.ais_cleaned")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Datos AIS limpios y deduplicados'")
 
-df_top_tipos_completo = (
-    df_ais_silver
-    .groupBy("VesselType")
-    .agg(
-        f.count("*").alias("Total_Posiciones"),
-        f.round(f.avg("SOG"), 2).alias("Velocidad_Media_Nudos")
-    )
-    # Cruce con el catálogo (Spark usará BroadcastHashJoin)[cite: 5]
-    .join(df_catalogo_completo, "VesselType", "left")
-    .orderBy(f.desc("Total_Posiciones"))
-    .limit(10)
-    .select("VesselType", "Descripcion_Tipo", "Total_Posiciones", "Velocidad_Media_Nudos")
+(
+    df_catalogo_completo.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(f"{CATALOG}.silver.vessel_types")
 )
 
-print("Top 10 Tráfico por Tipo de Buque:")
-display(df_top_tipos_completo)
-
-# ──── 3. Evidencia Técnica ────
-print("\n--- Plan de Ejecución ---")
-df_top_tipos_completo.explain()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC Pregunta 3
-
-# COMMAND ----------
-
-# =====================================================================
-# CAPA GOLD: TOP 10 BUQUES POR DISTANCIA SEMANAL (CONSOLIDADO POR MMSI)
-# =====================================================================
-
-df_top_viajeros = (
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-
-    # 1. Excluimos MMSIs defectuosos o genéricos
-    .filter(f.col("MMSI_Anomalo") == False)
-
-    # 2. Agrupamos por la entidad física (MMSI) para unir todos los H3_Macro que cruzó
-    .groupBy("MMSI")
-    .agg(
-        f.first("VesselName", ignorenulls=True).alias("VesselName"),
-        f.first("VesselType", ignorenulls=True).alias("VesselType"),
-        f.round(f.sum("distancia_segmento_nm"), 2).alias("Distancia_Total_Millas"),
-        f.round(
-            f.avg(f.when(f.col("velocidad_implicita_nudos") > 0.5, f.col("velocidad_implicita_nudos"))),
-            2
-        ).alias("Velocidad_Crucero_Prom_Nudos"),
-        f.countDistinct("H3_Macro").alias("Hexagonos_Macro_Atravesados"),
-        f.count("*").alias("Total_Tramos_Calculados")
-    )
-
-    # 3. Enriquecimiento con el catálogo de tipos de buque
-    .join(df_catalogo_completo, "VesselType", "left")
-
-    # 4. Ordenamiento y selección del Top 10
-    .orderBy(f.desc("Distancia_Total_Millas"))
-    .limit(10)
-    .select(
-        "MMSI",
-        "VesselName",
-        "Descripcion_Tipo",
-        "Distancia_Total_Millas",
-        "Velocidad_Crucero_Prom_Nudos",
-        "Hexagonos_Macro_Atravesados",
-        "Total_Tramos_Calculados"
-    )
-)
-
-print("Top 10 Buques con mayor distancia recorrida (Con Candado Cinemático y Reconexión H3):")
-display(df_top_viajeros)
-
-# COMMAND ----------
-
-# MMSI del "Pleasure Craft" con distancia irreal
-mmsi_sospechoso = "367638030"
-
-df_diagnostico_gps = (
-    # Leemos directamente de la tabla en tu capa Silver
-    spark.read.table(f"{CATALOG}.silver.ais_cleaned")
-    .filter(f.col("MMSI") == mmsi_sospechoso)
-    .select(
-        "MMSI_Real",
-        "MMSI",
-        "IMO",
-        "heading",
-        "status",
-        "VesselType",
-        "VesselName",
-        "BaseDateTime",
-        "LAT",
-        "LON",
-        "distancia_segmento_nm",
-        "SOG"
-    )
-    .orderBy("BaseDateTime")
-    .limit(10000)
-)
-
-display(df_diagnostico_gps)
+print(f"Tabla {CATALOG}.silver.vessel_types creada: {df_catalogo_completo.count():,} tipos.")
+display(df_catalogo_completo.limit(5))
