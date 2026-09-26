@@ -67,9 +67,18 @@ spark.sql(
 spark.sql(
     f"""
     CREATE VOLUME IF NOT EXISTS {CATALOG}.{RAW_SCHEMA}.{AIS_VOLUME}
-    COMMENT 'Zip y CSV de AIS'
+    COMMENT 'Datos crudos AIS: positions/zips (zip diarios), positions/csvs (CSV descomprimidos)
+    y reference/ (World Port Index)'
     """
 )
+
+# El Volume puede ya existir de una ejecución anterior con el comentario viejo; COMMENT ON VOLUME
+# lo actualiza sin recrearlo.
+spark.sql(f"""
+    COMMENT ON VOLUME {CATALOG}.{RAW_SCHEMA}.{AIS_VOLUME} IS
+    'Datos crudos AIS: positions/zips (zip diarios), positions/csvs (CSV descomprimidos) y
+    reference/ (World Port Index)'
+""")
 
 # COMMAND ----------
 

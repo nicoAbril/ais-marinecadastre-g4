@@ -461,6 +461,14 @@ df_silver = (
     .saveAsTable(f"{CATALOG}.silver.ais_cleaned")
 )
 
+spark.sql(f"""
+    COMMENT ON TABLE {CATALOG}.silver.ais_cleaned IS
+    'Posiciones AIS de la semana (2023-06-01 a 2023-06-07), con SOG imputado, duplicados
+    eliminados, MMSI_Anomalo marcado, enriquecimiento H3 (H3_Macro, H3_Micro), distancia y
+    velocidad implícita entre posiciones consecutivas, y segmentación de viajes (Trip_ID).
+    CLUSTER BY (MMSI, BaseDateTime).'
+""")
+
 print(f"Tabla {CATALOG}.silver.ais_cleaned actualizada y optimizada exitosamente.")
 
 # COMMAND ----------
@@ -509,6 +517,13 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Da
     .option("overwriteSchema", "true")
     .saveAsTable(f"{CATALOG}.silver.world_port_index")
 )
+
+spark.sql(f"""
+    COMMENT ON TABLE {CATALOG}.silver.world_port_index IS
+    'Catálogo de puertos del mundo (World Port Index, NGA), ajustado desde el CSV crudo: columnas
+    seleccionadas y renombradas (wpi_id, nombre_puerto, pais, lat, lon, tamano_puerto, tipo_puerto),
+    filas sin coordenadas descartadas. Fuente: msi.nga.mil, descarga automatizada en 01_ingesta.py.'
+""")
 
 print(f"Tabla {CATALOG}.silver.world_port_index creada: {df_wpi.count():,} puertos.")
 display(df_wpi.limit(5))
@@ -570,6 +585,13 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Da
     .option("overwriteSchema", "true")
     .saveAsTable(f"{CATALOG}.silver.vessel_types")
 )
+
+spark.sql(f"""
+    COMMENT ON TABLE {CATALOG}.silver.vessel_types IS
+    'Catálogo de tipos de buque (código AIS/NAIS VesselType -> descripción legible), recreado a
+    mano a partir de NOAA MarineCadastre VesselTypeCodes2018.pdf. Tabla de referencia usada en
+    las preguntas de negocio para traducir el código numérico.'
+""")
 
 print(f"Tabla {CATALOG}.silver.vessel_types creada: {df_catalogo_completo.count():,} tipos.")
 display(df_catalogo_completo.limit(5))

@@ -315,6 +315,21 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{DEST_SCHEMA} COMMENT 'Capa Go
     .saveAsTable(f"{CATALOG}.{DEST_SCHEMA}.{TABLA_CON_CLUSTER}")
 )
 
+spark.sql(f"""
+    COMMENT ON TABLE {CATALOG}.{DEST_SCHEMA}.{TABLA_SIN_CLUSTER} IS
+    'Línea base sin CLUSTER BY, para el Requisito 4: mismo contenido que {TABLA_CON_CLUSTER},
+    usada solo para comparar archivos leídos por consulta. No usar para análisis.'
+""")
+
+spark.sql(f"""
+    COMMENT ON TABLE {CATALOG}.{DEST_SCHEMA}.{TABLA_CON_CLUSTER} IS
+    'Accumulating snapshot fact de visitas a puerto (grano: MMSI_Real + Visita_ID). Detecta
+    entrada/salida por transición de estado (proximidad H3 a un puerto del WPI + Status
+    fondeado/amarrado). Visita_SK es una llave determinística (hash de MMSI_Real + entrada_ts).
+    entrada_censurada/salida_censurada marcan visitas truncadas en los bordes de la semana.
+    CLUSTER BY (wpi_id, Fecha_Entrada), alineado al propósito de consulta por puerto y fecha.'
+""")
+
 print(f"Tablas creadas: {DEST_SCHEMA}.{TABLA_SIN_CLUSTER} y {DEST_SCHEMA}.{TABLA_CON_CLUSTER}")
 
 # COMMAND ----------
