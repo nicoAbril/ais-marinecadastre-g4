@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 04 - Visitas a puerto y almacenamiento óptimo (Requisito 4)
 # MAGIC

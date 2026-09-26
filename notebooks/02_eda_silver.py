@@ -573,4 +573,3 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.silver COMMENT 'Capa Plata: Da
 
 print(f"Tabla {CATALOG}.silver.vessel_types creada: {df_catalogo_completo.count():,} tipos.")
 display(df_catalogo_completo.limit(5))
-# COMMAND ----------
