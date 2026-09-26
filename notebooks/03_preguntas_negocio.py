@@ -129,9 +129,10 @@ df_aprox.explain()
 # MAGIC    velocidad (`SOG` ya saneado) son válidos.
 # MAGIC 3. **Enriquecimiento tardío y evidencia del plan (`.explain()`):** el cruce con el catálogo se
 # MAGIC    hace **después** del `groupBy`, lo que reduce la cardinalidad antes del join (de millones de
-# MAGIC    eventos a menos de 100 filas) y permite que Catalyst aplique un `BroadcastHashJoin` en vez de
-# MAGIC    mover la tabla de hechos por la red. El `.orderBy().limit(10)` se resuelve con `PhotonTopK`,
-# MAGIC    sin ordenar toda la agregación.
+# MAGIC    eventos a menos de 100 filas). El broadcast se fuerza explícitamente (`f.broadcast(...)`), en
+# MAGIC    vez de dejarlo a la heurística automática de Catalyst, para no depender de que el tamaño de
+# MAGIC    `vessel_types` siga por debajo del umbral de auto-broadcast si la tabla crece más adelante.
+# MAGIC    El `.orderBy().limit(10)` se resuelve con `PhotonTopK`, sin ordenar toda la agregación.
 
 # COMMAND ----------
 
@@ -148,8 +149,8 @@ df_top_tipos_completo = (
         f.count("*").alias("Total_Posiciones"),
         f.round(f.avg("SOG"), 2).alias("Velocidad_Media_Nudos")
     )
-    # Cruce con el catálogo (Spark usará BroadcastHashJoin)[cite: 5]
-    .join(df_catalogo_completo, "VesselType", "left")
+    # Cruce con el catálogo, broadcast explícito (no se deja a la heurística automática de Spark)
+    .join(f.broadcast(df_catalogo_completo), "VesselType", "left")
     .orderBy(f.desc("Total_Posiciones"))
     .limit(10)
     .select("VesselType", "Descripcion_Tipo", "Total_Posiciones", "Velocidad_Media_Nudos")
@@ -200,9 +201,12 @@ df_top_tipos_completo.explain()
 # MAGIC      tiempo que el barco estuvo fondeado, atracado o a la deriva por la marea.
 # MAGIC    - `Hexagonos_Macro_Atravesados` y `Total_Tramos_Calculados` dan contexto sobre el alcance
 # MAGIC      geográfico y la solidez de la muestra detrás de cada buque.
-# MAGIC 4. **Enriquecimiento y Top 10:** se cruza con `vessel_types` mediante `left join`, para que
-# MAGIC    ningún barco del Top 10 se pierda por no haber reportado su categoría, y se ordena de mayor
-# MAGIC    a menor distancia recorrida.
+# MAGIC 4. **Orden, corte a Top 10 y enriquecimiento en ese orden:** primero se ordena de mayor a menor
+# MAGIC    distancia y se corta a los 10 primeros; el cruce con `vessel_types` (`left join`, para que
+# MAGIC    ningún barco del Top 10 se pierda por no haber reportado su categoría) se hace **después**
+# MAGIC    del corte, no antes. Como es un `left join` que no filtra filas, el resultado es idéntico a
+# MAGIC    hacerlo antes, pero el join solo procesa 10 filas en vez de todos los buques agrupados por
+# MAGIC    `MMSI`. El broadcast también se fuerza explícitamente con `f.broadcast(...)`.
 
 # COMMAND ----------
 
@@ -232,12 +236,14 @@ df_top_viajeros = (
         f.count("*").alias("Total_Tramos_Calculados")
     )
 
-    # 3. Enriquecimiento con el catálogo de tipos de buque
-    .join(df_catalogo_completo, "VesselType", "left")
-
-    # 4. Ordenamiento y selección del Top 10
+    # 3. Ordenamiento y corte al Top 10 antes del join: reduce el cruce a 10 filas en vez de
+    # ejecutarlo sobre todos los buques agrupados (left join, no filtra filas: el resultado final
+    # no cambia, solo se hace más barato)
     .orderBy(f.desc("Distancia_Total_Millas"))
     .limit(10)
+
+    # 4. Enriquecimiento con el catálogo de tipos de buque, broadcast explícito
+    .join(f.broadcast(df_catalogo_completo), "VesselType", "left")
     .select(
         "MMSI",
         "VesselName",
