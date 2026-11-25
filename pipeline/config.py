@@ -40,10 +40,11 @@ ESQUEMAS = {
 # ─── Volumes: (esquema, volume) -> (comentario, subcarpetas a crear) ───
 VOLUMES = {
     ("landing", "ais"): (
-        "Archivos AIS. _descargas/: zip originales de NOAA (caché para no volver a descargar). "
-        "_staging/: escritura en curso, invisible para Auto Loader. entrantes/: archivos "
-        "completos que consume el stream de bronce (nombres inmutables, nunca se sobrescriben).",
-        ["_descargas", "_staging", "entrantes"],
+        "Archivos AIS. _descargas/: zip originales de NOAA (copia cruda y caché para no volver a "
+        "descargar). entrantes/: un CSV completo por día, el que consume el stream de bronce. "
+        "Cada archivo se sube de una sola vez (subida atómica del almacenamiento de objetos: "
+        "Auto Loader nunca ve un archivo a medias) y con nombre inmutable (nunca se sobrescribe).",
+        ["_descargas", "entrantes"],
     ),
     ("landing", "referencias"): (
         "Snapshots de fuentes de referencia, una carpeta por fuente y un archivo por fecha de "
@@ -58,6 +59,17 @@ VOLUMES = {
         ["bronze", "silver", "gold", "autoloader_schemas"],
     ),
 }
+
+
+# ─── Productor del feed AIS (01_productor.py) ───
+URL_BASE_NOAA = "https://coast.noaa.gov/htdata/CMSP/AISDataHandler"
+
+# Reloj simulado: si el job no recibe `fecha`, entrega el día de datos que corresponde a "hoy":
+#   fecha_datos = DIA_CERO_DATOS + (hoy UTC − INICIO_SIMULACION)
+# Así cada día real entrega un día distinto de 2023, y correr el job dos veces el mismo día
+# entrega el mismo archivo (que ya existe → no se hace nada).
+DIA_CERO_DATOS = "2023-06-08"      # primer día del feed (los días 1-7 entran como backfill)
+INICIO_SIMULACION = "2026-11-25"   # día real en que arrancó la simulación
 
 
 # ─── Fuentes de referencia (00_preparacion.py, parte B) ───
@@ -136,7 +148,11 @@ def leer_parametro(nombre: str, defecto: str) -> str:
 
     Crea el widget si no existe, para que el notebook también muestre el parámetro al correrlo
     a mano. En un job, el valor del parámetro de la tarea sobrescribe al del widget.
+
+    En local no hay widgets: se lee la variable de entorno OW_<NOMBRE> (p. ej. OW_FECHA).
     """
+    if not en_databricks():
+        return os.environ.get(f"OW_{nombre.upper()}", defecto)
     try:
         from databricks.sdk.runtime import dbutils
 
@@ -169,10 +185,6 @@ class Config:
     @property
     def ruta_ais_descargas(self) -> str:
         return f"{self.volume('landing', 'ais')}/_descargas"
-
-    @property
-    def ruta_ais_staging(self) -> str:
-        return f"{self.volume('landing', 'ais')}/_staging"
 
     @property
     def ruta_ais_entrantes(self) -> str:

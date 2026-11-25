@@ -16,7 +16,7 @@ entregas:
 ### Arquitectura
 
 ```
- NOAA (zip diario) ──► 01_productor ──► landing/ais/_staging ──mv──► landing/ais/entrantes
+ NOAA (zip diario) ──► 01_productor ──(subida atómica, 1 CSV/día)──► landing/ais/entrantes
                                                                             │ Auto Loader
  WPI · Natural Earth · semilla ──► 00_preparacion ──► silver.dim_*          ▼
                                           │                  02_bronze ──► bronze (crudo, append)
@@ -36,8 +36,8 @@ Cada notebook es una tarea del job y sigue la misma estructura: *Propósito → 
 
 | # | Notebook | Capa / rol | Lee | Escribe | Estado |
 |---|---|---|---|---|---|
-| 0 | [`00_preparacion`](pipeline/00_preparacion.py) | Estructura + referencias | WPI, Natural Earth, semilla | catálogo, esquemas, Volumes, `silver.dim_*` | escrito |
-| 1 | `01_productor` | Simulador del feed (param. `fecha`) | NOAA | `landing/ais/entrantes` | pendiente |
+| 0 | [`00_preparacion`](pipeline/00_preparacion.py) | Estructura + referencias | WPI, Natural Earth, semilla | catálogo, esquemas, Volumes, `silver.dim_*` | corrido OK (2026-11-25) |
+| 1 | [`01_productor`](pipeline/01_productor.py) | Simulador del feed (param. `fecha`) | NOAA | `landing/ais/entrantes` | escrito |
 | 2 | `02_bronze` | Bronce | `landing/ais/entrantes` | `bronze` | pendiente |
 | 3 | `03_silver` | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | pendiente |
 | 4 | `04_gold` | Oro + alertas | `silver` | `gold` | pendiente |
@@ -72,7 +72,7 @@ Configuración compartida (nombres, rutas, fuentes, parámetros): [`pipeline/con
 
 ```
 oceanwatch_lakehouse                     (catálogo; parámetro `catalogo`)
-├── landing   Volumes: ais/{_descargas,_staging,entrantes} · referencias/{wpi,natural_earth,semillas}
+├── landing   Volumes: ais/{_descargas,entrantes} · referencias/{wpi,natural_earth,semillas}
 ├── bronze    crudo inmutable
 ├── silver    datos validados · cuarentena · métricas · dim_tipo_buque · dim_puertos · dim_h3_tierra_firme
 ├── gold      modelo de negocio
