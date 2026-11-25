@@ -11,3 +11,5 @@ __pycache__/
 notebooks/Volumes/
 *.zip
 *.csv
+# Excepción: semillas versionadas del pipeline (Entrega 2) sí van al repo
+!pipeline/seeds/*.csv
