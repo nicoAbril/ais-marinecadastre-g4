@@ -108,7 +108,11 @@ REGIONES_AIS = {
 }
 MASCARA_RESOLUCION_H3 = 7  # = H3_Micro de silver (~5 km² por celda)
 MASCARA_K_RIOS = 1         # anillos de celdas vecinas que se le dan de margen a cada río
-MASCARA_K_COSTA = 1        # franja costera tolerada (muelles, error GPS, costa gruesa a 1:10m)
+# Calibrados con el día 2023-06-01 (ver BITACORA.md): con k_costa=1 y sin zona portuaria, el
+# 11,4 % de las posiciones caía "en tierra" (puertos y canales que la escala 1:10m no dibuja);
+# con k_costa=3 y k_puertos=8 baja a 1,25 % (109 897 filas, 484 buques).
+MASCARA_K_COSTA = 3        # franja tolerada junto a cualquier agua (~3,5 km): muelles, dársenas, costa gruesa
+MASCARA_K_PUERTOS = 8      # radio alrededor de cada puerto del WPI considerado navegable (~10 km)
 
 
 def en_databricks() -> bool:

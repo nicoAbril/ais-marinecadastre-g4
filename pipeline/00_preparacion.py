@@ -422,16 +422,42 @@ else:
 # MAGIC de millones de celdas, mientras que la tierra dentro de la cobertura AIS son ~4 M.
 # MAGIC
 # MAGIC ```
-# MAGIC tierra_firme = tierra (polyfill)            celdas cuyo centro cae en tierra
+# MAGIC candidata    = tierra (polyfill)            celdas cuyo centro cae en tierra
 # MAGIC              − lagos (cover)                celdas que tocan un lago
 # MAGIC              − ríos  (cover + k_rios)       celdas que toca la línea central del río, más k anillos
-# MAGIC              − costa (k_costa)              celdas de tierra con alguna vecina (a k anillos) que no es tierra
+# MAGIC tierra_firme = candidata
+# MAGIC              − costa (k_costa)              celdas candidatas con alguna vecina (a k anillos) que no es candidata
+# MAGIC              − puertos (k_puertos)          celdas a k anillos o menos de un puerto del WPI
 # MAGIC ```
 # MAGIC
 # MAGIC - **Por qué restar ríos:** el AIS de EE. UU. incluye tráfico fluvial real (remolcadores y
 # MAGIC   barcazas en el Mississippi, el Ohio, etc.). En un polígono de tierra a 1:10m un río de 1 km
 # MAGIC   de ancho *es* tierra; sin esta resta, tráfico legítimo iría a cuarentena.
-# MAGIC - **Por qué restar la costa:** muelles, error de GPS y la costa gruesa a escala 1:10m.
+# MAGIC - **Por qué restar la costa y los puertos (calibración con datos):** con la primera versión
+# MAGIC   (`k_costa = 1`, sin zona portuaria) el **11,4 %** de las posiciones del 2023-06-01 caía
+# MAGIC   "en tierra" (1 007 548 filas, 3 382 buques). El diagnóstico mostró que no eran errores de
+# MAGIC   GPS sino **puertos**: el 81 % estaban detenidos, y las zonas principales eran el canal de
+# MAGIC   Houston (252 870 filas, 428 buques), los pantanos de Luisiana, Nueva Orleans, Port
+# MAGIC   Everglades, Norfolk y Seattle. La escala 1:10m no dibuja canales de navegación, dársenas
+# MAGIC   ni marinas. Se midieron 16 combinaciones:
+# MAGIC
+# MAGIC   | Franja costera | Zona portuaria | Filas "en tierra" | % | Buques |
+# MAGIC   |---|---|---|---|---|
+# MAGIC   | k=1 (inicial) | — | 1 007 548 | 11,44 % | 3 382 |
+# MAGIC   | k=3 | — | 238 052 | 2,70 % | 872 |
+# MAGIC   | k=1 | k=8 (~10 km) | 265 812 | 3,02 % | 1 159 |
+# MAGIC   | **k=3** | **k=8 (~10 km)** | **119 514** | **1,36 %** | **493** |
+# MAGIC   | k=4 | k=12 (~14 km) | 87 331 | 0,99 % | 306 |
+# MAGIC
+# MAGIC   Se eligió `k_costa = 3`, `k_puertos = 8`: más allá, cada ampliación quita poco y vuelve la
+# MAGIC   máscara permisiva con errores reales cerca de la costa. El ~1,4 % restante va a cuarentena
+# MAGIC   y se documenta como **limitación conocida** (incluye algo de tráfico real en canales que
+# MAGIC   la escala 1:10m no resuelve); no se pierde, queda en la cuarentena con su motivo. No se
+# MAGIC   usó una costa más precisa (OSM, NOAA, USGS) por costo de descarga y procesamiento.
+# MAGIC
+# MAGIC   **Resultado tras reconstruir** (la franja de 3 anillos se mide contra cualquier agua: mar,
+# MAGIC   lago o río): máscara de 2 099 026 celdas (antes 3 207 452) y **109 897 filas "en tierra"
+# MAGIC   (1,25 %), 484 buques** en el 2023-06-01. Detalle en `BITACORA.md`.
 # MAGIC - **Por qué la versión incluye los parámetros:** cambiar un `k` o una región al calibrar
 # MAGIC   cambia la versión y fuerza la reconstrucción, sin intervención manual.
 # MAGIC - **Por qué en mosaicos de 5°:** cada capa de Natural Earth trae pocos multipolígonos enormes
@@ -470,15 +496,18 @@ for capa, (_, url) in config.CAPAS_NATURAL_EARTH.items():
         errores_fuentes.append(str(e))
         print(f"ERROR Natural Earth {capa} (la máscara no se construye en esta corrida): {e}")
 
-MASCARA_DISPONIBLE = len(snaps_ne) == len(config.CAPAS_NATURAL_EARTH)
+# La máscara usa los puertos (zona portuaria): sin WPI construido en esta corrida no se reconstruye.
+MASCARA_DISPONIBLE = len(snaps_ne) == len(config.CAPAS_NATURAL_EARTH) and snap_wpi is not None
 
 if MASCARA_DISPONIBLE:
     parametros_mascara = {
         "capas": {capa: s.sha256 for capa, s in sorted(snaps_ne.items())},
+        "wpi": snap_wpi.sha256,
         "regiones": config.REGIONES_AIS,
         "resolucion": RES,
         "k_rios": config.MASCARA_K_RIOS,
         "k_costa": config.MASCARA_K_COSTA,
+        "k_puertos": config.MASCARA_K_PUERTOS,
         "mosaico": TAMANO_MOSAICO_GRADOS,
     }
     VERSION_MASCARA = hashlib.sha256(
@@ -592,8 +621,10 @@ if RECONSTRUIR_MASCARA:
 # MAGIC ### Álgebra de conjuntos y escritura
 # MAGIC
 # MAGIC Cada resta es un `left_anti` join: "quédate con las celdas de la izquierda que **no**
-# MAGIC aparecen a la derecha". La franja costera se obtiene sin geometría: una celda de tierra es
-# MAGIC costera si alguna de sus vecinas a `k_costa` anillos (`h3_kring`) no está en la tierra.
+# MAGIC aparecen a la derecha". La franja costera se obtiene sin geometría: una celda candidata es
+# MAGIC costera si alguna de sus vecinas a `k_costa` anillos (`h3_kring`) no es candidata (es mar,
+# MAGIC lago o río). La zona portuaria son los `k_puertos` anillos alrededor de la celda de cada
+# MAGIC puerto de `dim_puertos`.
 
 # COMMAND ----------
 
@@ -607,18 +638,28 @@ if RECONSTRUIR_MASCARA:
         .select(f.explode(dbf.h3_kring("celda", config.MASCARA_K_RIOS)).alias("celda"))
         .distinct()
     )
+    candidata = (
+        tierra
+        .join(lagos, on="celda", how="left_anti")
+        .join(rios, on="celda", how="left_anti")
+    )
     costa = (
-        tierra.select("celda", f.explode(dbf.h3_kring("celda", config.MASCARA_K_COSTA)).alias("vecino"))
-        .join(tierra.withColumnRenamed("celda", "vecino"), on="vecino", how="left_anti")
+        candidata.select("celda", f.explode(dbf.h3_kring("celda", config.MASCARA_K_COSTA)).alias("vecino"))
+        .join(candidata.withColumnRenamed("celda", "vecino"), on="vecino", how="left_anti")
         .select("celda")
+        .distinct()
+    )
+    zona_portuaria = (
+        spark.table(T_PUERTOS)
+        .select(dbf.h3_longlatash3("lon", "lat", RES).alias("centro"))
+        .select(f.explode(dbf.h3_kring("centro", config.MASCARA_K_PUERTOS)).alias("celda"))
         .distinct()
     )
 
     df_tierra_firme = (
-        tierra
-        .join(lagos, on="celda", how="left_anti")
-        .join(rios, on="celda", how="left_anti")
+        candidata
         .join(costa, on="celda", how="left_anti")
+        .join(zona_portuaria, on="celda", how="left_anti")
         .select(f.col("celda").alias("h3_celda"), f.lit(VERSION_MASCARA).alias("_version_fuente"))
     )
     df_tierra_firme.write.mode("overwrite").saveAsTable(T_TIERRA)
@@ -654,8 +695,9 @@ for (capa, nombre), (_, subcarpetas) in config.VOLUMES.items():
 # MAGIC
 # MAGIC Pruebas de humo. Las dos primeras son **asserts** (si fallan, la máscara está mal y la
 # MAGIC tarea debe fallar). Las de ríos se **reportan**: dependen de qué tan bien Natural Earth cubre
-# MAGIC cada río, y su ajuste es lo que se calibra con datos reales. Los dos puntos fluviales son
-# MAGIC posiciones reales del archivo AIS del 2023-06-01.
+# MAGIC cada río, y su ajuste es lo que se calibra con datos reales. Los puntos fluviales y el del
+# MAGIC canal de Houston son posiciones reales del archivo AIS del 2023-06-01 (el de Houston es el
+# MAGIC centro de la zona que más posiciones aportaba "en tierra" antes de la calibración).
 
 # COMMAND ----------
 
@@ -666,6 +708,7 @@ if MASCARA_DISPONIBLE:
         ("Kansas (tierra adentro)", -98.5, 38.5, True, True),
         ("Río Mississippi - ferry ST FRANCISVILLE", -91.22283, 30.28335, False, False),
         ("Río Ohio, Pittsburgh - GALE R RHODES", -80.07596, 40.49818, False, False),
+        ("Canal de navegación de Houston", -95.11, 29.74, False, False),
     ]
     resultado = (
         spark.createDataFrame(
