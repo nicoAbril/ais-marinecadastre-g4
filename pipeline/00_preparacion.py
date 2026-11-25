@@ -123,9 +123,10 @@ except Exception as e:
 # MAGIC - Las carpetas se crean aquí para que ningún stream falle por una ruta inexistente en la
 # MAGIC   primera corrida. Se usa la Files API del SDK en vez de `os.makedirs` porque funciona igual
 # MAGIC   en Databricks y en local; crear una carpeta que ya existe no falla.
-# MAGIC - **`_staging/` separada de `entrantes/`:** el productor escribe el archivo completo en
-# MAGIC   `_staging/` y solo al final lo mueve a `entrantes/`. Auto Loader solo mira `entrantes/`, así
-# MAGIC   que nunca lee un archivo a medio escribir.
+# MAGIC - **Sin carpeta `_staging/` en el Volume:** los Volumes viven en almacenamiento de objetos,
+# MAGIC   donde no existe "renombrar" (un `mv` es copiar + borrar) pero **subir un archivo es
+# MAGIC   atómico** (se ve completo o no se ve). El productor arma el archivo en el disco del driver
+# MAGIC   y lo sube de una sola vez a `entrantes/`; Auto Loader nunca lee un archivo a medias.
 
 # COMMAND ----------
 
@@ -337,7 +338,7 @@ else:
     df_tipos = (
         spark.read.option("header", True).csv(snap_tipos.ruta)
         .select(
-            f.col("vessel_type").cast("int").alias("vessel_type"),
+            f.col("vessel_type").try_cast("int").alias("vessel_type"),
             f.col("descripcion"),
             f.col("categoria"),
             f.lit(snap_tipos.sha256).alias("_version_fuente"),
@@ -352,8 +353,15 @@ else:
 # MAGIC ## B.4 `dim_puertos` desde el World Port Index
 # MAGIC
 # MAGIC Misma selección de columnas que en la Entrega 1. El CSV se lee **sin** `inferSchema`: todo
-# MAGIC llega como texto y los tipos se fijan aquí, explícitos (un cambio de formato en la fuente se
-# MAGIC convierte en nulos visibles, no en un tipo inferido distinto).
+# MAGIC llega como texto y los tipos se fijan aquí, explícitos.
+# MAGIC
+# MAGIC **`try_cast` y no `cast`.** Databricks corre en modo ANSI: un `cast` que no puede convertir
+# MAGIC un valor **lanza error** y tumba la tarea completa (en la primera corrida falló así:
+# MAGIC `CAST_INVALID_INPUT: '7950.0' cannot be cast to INT`, porque la NGA escribe el número de
+# MAGIC puerto con decimal). `try_cast` devuelve `NULL` en su lugar; las filas sin llave o sin
+# MAGIC coordenadas se descartan y **se cuentan**, así un cambio de formato en la fuente se ve como
+# MAGIC descarte medible y no como una caída. El número de puerto pasa por `double` antes de `int`
+# MAGIC para aceptar `7950.0`.
 # MAGIC
 # MAGIC **Semilla de respaldo.** Desde el 2026-11-21 el sitio de la NGA (`msi.nga.mil`) responde
 # MAGIC `HTTP 503` (servicio no disponible), tanto en la URL de descarga como en la página pública
@@ -382,20 +390,26 @@ if snap_wpi is None:
 elif version_construida(T_PUERTOS) == snap_wpi.sha256:
     print(f"{T_PUERTOS} ya está en la versión {snap_wpi.sha256[:12]}: no se reconstruye.")
 else:
-    df_puertos = (
+    df_wpi = (
         spark.read.option("header", True).csv(snap_wpi.ruta)
         .select(
-            f.col("World Port Index Number").cast("int").alias("wpi_id"),
+            f.col("World Port Index Number").try_cast("double").try_cast("int").alias("wpi_id"),
             f.col("Main Port Name").alias("nombre_puerto"),
             f.col("Country Code").alias("pais"),
-            f.col("Latitude").cast("double").alias("lat"),
-            f.col("Longitude").cast("double").alias("lon"),
+            f.col("Latitude").try_cast("double").alias("lat"),
+            f.col("Longitude").try_cast("double").alias("lon"),
             f.col("Harbor Size").alias("tamano_puerto"),
             f.col("Harbor Type").alias("tipo_puerto"),
             f.lit(snap_wpi.sha256).alias("_version_fuente"),
         )
-        .filter(f.col("wpi_id").isNotNull() & f.col("lat").isNotNull() & f.col("lon").isNotNull())
     )
+    valido = f.col("wpi_id").isNotNull() & f.col("lat").isNotNull() & f.col("lon").isNotNull()
+    conteo = df_wpi.agg(
+        f.count("*").alias("leidas"), f.count(f.when(~valido, 1)).alias("descartadas")
+    ).first()
+    print(f"WPI: {conteo.leidas:,} filas leídas, {conteo.descartadas:,} descartadas sin llave o coordenadas")
+
+    df_puertos = df_wpi.filter(valido)
     df_puertos.write.mode("overwrite").saveAsTable(T_PUERTOS)
     print(f"{T_PUERTOS} reconstruida: {spark.table(T_PUERTOS).count():,} puertos.")
 
