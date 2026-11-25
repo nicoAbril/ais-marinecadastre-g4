@@ -1,11 +1,93 @@
 # OceanWatch Analytics — AIS MarineCadastre
 
-Proyecto final de **Soluciones Intensivas en Datos (MINE 4213)**, Entrega 1. Explora el tráfico
-marítimo AIS de una semana (2023-06-01 a 2023-06-07), responde 5 preguntas de negocio del
-enunciado, agrega una pregunta adicional sobre visitas a puerto, y compara formatos y layouts de
-almacenamiento sobre Delta Lake / Unity Catalog en Databricks.
+Proyecto final de **Soluciones Intensivas en Datos (MINE 4213)**. El repo contiene las dos
+entregas:
 
-## Cómo leer este repo
+- **Entrega 1** (carpeta [`notebooks/`](notebooks/)): explora el tráfico marítimo AIS de una
+  semana (2023-06-01 a 2023-06-07), responde 5 preguntas de negocio del enunciado, agrega una
+  pregunta adicional sobre visitas a puerto, y compara formatos y layouts de almacenamiento sobre
+  Delta Lake / Unity Catalog en Databricks.
+- **Entrega 2** (carpeta [`pipeline/`](pipeline/)): el pipeline completo — ingesta en streaming,
+  capas con calidad como compuerta, orquestación y ML. Ver
+  [Entrega 2 — pipeline en streaming](#entrega-2--pipeline-en-streaming).
+
+## Entrega 2 — pipeline en streaming
+
+### Arquitectura
+
+```
+ NOAA (zip diario) ──► 01_productor ──► landing/ais/_staging ──mv──► landing/ais/entrantes
+                                                                            │ Auto Loader
+ WPI · Natural Earth · semilla ──► 00_preparacion ──► silver.dim_*          ▼
+                                          │                  02_bronze ──► bronze (crudo, append)
+                                          │                                 │ foreachBatch + MERGE
+                                          └──────── compuertas ───► 03_silver ──► silver ─┬─► cuarentena
+                                                                            │              └─► métricas de calidad
+                                                                            ▼
+                                                    04_gold ──► gold (recalculado) + alertas (watermark)
+                                                                            │
+                                                    05_auditoria · 06_ml ◄──┘
+```
+
+### Índice de notebooks
+
+Cada notebook es una tarea del job y sigue la misma estructura: *Propósito → Entradas y salidas
+→ Decisiones → Código → Evidencia*.
+
+| # | Notebook | Capa / rol | Lee | Escribe | Estado |
+|---|---|---|---|---|---|
+| 0 | [`00_preparacion`](pipeline/00_preparacion.py) | Estructura + referencias | WPI, Natural Earth, semilla | catálogo, esquemas, Volumes, `silver.dim_*` | escrito |
+| 1 | `01_productor` | Simulador del feed (param. `fecha`) | NOAA | `landing/ais/entrantes` | pendiente |
+| 2 | `02_bronze` | Bronce | `landing/ais/entrantes` | `bronze` | pendiente |
+| 3 | `03_silver` | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | pendiente |
+| 4 | `04_gold` | Oro + alertas | `silver` | `gold` | pendiente |
+| 5 | `05_auditoria` | Auditoría del job | todas | `ops` | pendiente |
+| 6 | `06_ml` | ML con MLflow | `gold` | experimento + modelo en UC | pendiente |
+
+Configuración compartida (nombres, rutas, fuentes, parámetros): [`pipeline/config.py`](pipeline/config.py).
+
+### Principios de diseño
+
+1. **Modelo unificado.** El resultado de plata y oro es función del *conjunto* de eventos
+   recibidos, no de cómo llegaron (un archivo diario o por hora, repetidos, tardíos, o
+   reprocesados tras perder el checkpoint). El mismo código sirve para streaming y backfill.
+2. **Unidad de idempotencia por capa.** Bronce: el archivo (checkpoint de Auto Loader +
+   append). Plata: el registro `(MMSI, H3_Macro, BaseDateTime)`, vía `MERGE` con un ganador
+   determinístico (calidad → completitud → hash como último desempate). Oro: la llave del
+   agregado, recalculada desde plata.
+3. **Plata = transformaciones por fila; oro = transformaciones entre filas** (trayectorias,
+   agregados), recalculadas para las llaves afectadas.
+4. **Sobrescribir solo es seguro con estados completos** (dimensiones de referencia, días de
+   oro recalculados desde plata); con incrementos, `MERGE` por llave.
+5. **Bronce absorbe cambios de esquema sin perder datos** (strings + `_rescued_data`); plata
+   tiene un contrato fijo; un cambio de esquema genera alerta, no rompe el flujo.
+6. **Camino exacto y camino rápido.** Oro se recalcula (completo, corrige tardíos); las alertas
+   usan ventanas con watermark (oportunas, con estado acotado).
+7. **PySpark como lenguaje base**, igual que en la Entrega 1: toda transformación usa la API de
+   DataFrame (`pyspark.sql.functions as f`; las funciones H3 y espaciales nativas de Databricks
+   vía `pyspark.databricks.sql.functions as dbf`). `spark.sql` solo para DDL y metadatos de
+   Unity Catalog (`CREATE`, `COMMENT ON`, `SHOW`), que no tienen equivalente en la API.
+
+### Unity Catalog (Entrega 2)
+
+```
+oceanwatch_lakehouse                     (catálogo; parámetro `catalogo`)
+├── landing   Volumes: ais/{_descargas,_staging,entrantes} · referencias/{wpi,natural_earth,semillas}
+├── bronze    crudo inmutable
+├── silver    datos validados · cuarentena · métricas · dim_tipo_buque · dim_puertos · dim_h3_tierra_firme
+├── gold      modelo de negocio
+└── ops       Volume checkpoints · auditoría de ejecuciones
+```
+
+### Cómo ejecutar la Entrega 2
+
+- **En Databricks:** Git folder del repo, cómputo serverless, correr los notebooks de
+  `pipeline/` en orden (o el job, cuando esté definido).
+- **En local:** `uv sync`, kernel del `.venv` en VS Code y la extensión de Databricks conectada
+  con el perfil `uniandes`. `config.obtener_spark()` usa Databricks Connect (el cómputo corre en
+  el workspace) y `config.obtener_workspace()` la Files API para leer y escribir en Volumes.
+
+## Cómo leer este repo (Entrega 1)
 
 Cada notebook tiene sus propias celdas `%md` con el detalle de cada decisión (por qué un filtro,
 qué muestra un `.explain()`, etc.). Este README no repite ese contenido: da el mapa general —
