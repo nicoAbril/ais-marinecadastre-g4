@@ -114,6 +114,23 @@ MASCARA_K_RIOS = 1         # anillos de celdas vecinas que se le dan de margen a
 MASCARA_K_COSTA = 3        # franja tolerada junto a cualquier agua (~3,5 km): muelles, dársenas, costa gruesa
 MASCARA_K_PUERTOS = 8      # radio alrededor de cada puerto del WPI considerado navegable (~10 km)
 
+# ─── Oro (04_gold.py) ───
+# Trayectorias: reglas de corte de viaje de la Entrega 1
+VIAJE_MAX_SALTO_H3 = 2        # salto de más de 2 celdas H3 res 7 entre reportes consecutivos
+VIAJE_MAX_SILENCIO_H = 12     # más de 12 h sin reportar
+VELOCIDAD_MAX_KN = 60         # velocidad implícita físicamente imposible para un buque
+# Tráfico por celda y hora: H3 res 5 (~250 km²). Medido el 2023-06-01: 10 288 celdas, 70 876
+# filas celda×hora (res 7 serían 371 365); se ve bien en un mapa nacional.
+RES_TRAFICO = 5
+# Presencia en puertos: área = anillo de 5 celdas H3 res 8 (~4 km) alrededor del punto del WPI
+# (como en la Entrega 1). "En puerto" = en el área y (Status fondeado/amarrado o SOG < 1 nudo).
+# Medido el 2023-06-01 frente a la regla de la Entrega 1 (Status 1/5 o nulo): falsos positivos
+# navegando a ≥ 5 nudos 77 384 → 14 701; suma 1,3 M posiciones de buques detenidos con otro Status.
+PUERTO_RES_H3 = 8
+PUERTO_K_ANILLOS = 5
+EN_PUERTO_STATUS = (1, 5)
+EN_PUERTO_SOG_MAX = 1.0
+
 
 def en_databricks() -> bool:
     """True si el código corre dentro de Databricks (notebook o job); False en local."""

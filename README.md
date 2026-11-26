@@ -39,8 +39,8 @@ Cada notebook es una tarea del job y sigue la misma estructura: *Propósito → 
 | 0 | [`00_preparacion`](pipeline/00_preparacion.py) | Estructura + referencias | WPI, Natural Earth, semilla | catálogo, esquemas, Volumes, `silver.dim_*` | corrido OK (2026-11-25) |
 | 1 | [`01_productor`](pipeline/01_productor.py) | Simulador del feed (param. `fecha`) | NOAA | `landing/ais/entrantes` | corrido OK (2026-11-25) |
 | 2 | [`02_bronze`](pipeline/02_bronze.py) | Bronce | `landing/ais/entrantes` | `bronze.ais_posiciones_raw` | corrido OK (2026-11-25) |
-| 3 | `03_silver` | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | pendiente |
-| 4 | `04_gold` | Oro + alertas | `silver` | `gold` | pendiente |
+| 3 | [`03_silver`](pipeline/03_silver.py) | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | escrito (se ejecuta en Databricks) |
+| 4 | [`04_gold`](pipeline/04_gold.py) | Oro (batch incremental) + alertas | `silver` | `gold` | escrito, sin alertas (corre en local) |
 | 5 | `05_auditoria` | Auditoría del job | todas | `ops` | pendiente |
 | 6 | `06_ml` | ML con MLflow | `gold` | experimento + modelo en UC | pendiente |
 

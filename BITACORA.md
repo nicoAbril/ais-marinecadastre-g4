@@ -63,7 +63,7 @@ Resumen de qué se tomó de las sesiones presenciales de semana 5 (Spark a escal
 | Técnica | Dónde quedó |
 |---|---|
 | Esquema tolerante y datos rescatados (`_rescued_data`) | `02_bronze.py` (modo `rescue`) |
-| `foreachBatch` + `DeltaTable.merge` para escritura idempotente por llave | pendiente: `03_silver.py` |
+| `foreachBatch` + `DeltaTable.merge` para escritura idempotente por llave | `03_silver.py` |
 | Destino idempotente vs. *at-least-once* al perder el checkpoint | pendiente: evidencia en `03_silver.py` |
 
 ### Semana 12 — Orquestación y calidad declarativa
@@ -71,7 +71,7 @@ Resumen de qué se tomó de las sesiones presenciales de semana 5 (Spark a escal
 | Técnica | Dónde quedó |
 |---|---|
 | Volume de Unity Catalog como zona de llegadas | `00_preparacion.py`, `01_productor.py` |
-| Expectations y tabla de cuarentena | pendiente: `03_silver.py` |
+| Expectations y tabla de cuarentena | `03_silver.py` (reglas duras con prioridad, `motivos`, `motivo_principal`) |
 | Lakeflow Job con tareas, dependencias y disparador | pendiente |
 
 ## Registro de decisiones
@@ -211,3 +211,48 @@ Cada entrada: qué se decidió, qué alternativas había y qué evidencia la res
 - **Limitación conocida:** el 1,25 % restante va a cuarentena con motivo `en_tierra` e incluye
   algo de tráfico real en canales que la escala 1:10m no resuelve. No se pierde: queda en la
   cuarentena.
+
+### 2026-11-25 · `foreachBatch` no corre desde Databricks Connect en local
+
+- **Evidencia:** la primera corrida de `03_silver` desde VS Code (Databricks Connect → serverless)
+  falló al iniciar el primer lote con `ISOLATION_STARTUP_FAILURE.SANDBOX_STARTUP … failed to load
+  /databricks/python3/bin/python: exec format error`. Un stream mínimo de 3 filas con un
+  `foreachBatch` vacío falla igual: no es el código de plata. Bronce no tuvo el problema porque
+  no ejecuta código Python del usuario dentro del stream.
+- **Causa:** la función de `foreachBatch` es Python del usuario que Databricks ejecuta en un
+  contenedor aislado del servidor; ese contenedor no arranca para sesiones de un cliente externo.
+- **Decisión:** los notebooks con `foreachBatch` (plata, oro) se ejecutan dentro de Databricks
+  (Git folder o tarea del job). El desarrollo local sigue sirviendo para el resto.
+
+### 2026-11-25 · Oro: batch incremental que pregunta a plata qué fechas cambiaron
+
+- **Problema:** plata recibe `MERGE` con actualizaciones (copia mejor de una llave), y un stream
+  sobre una tabla Delta con actualizaciones falla. `skipChangeCommits` perdería cambios.
+- **Alternativas:** Change Data Feed (no visto en clase); una tabla `fechas_modificadas` escrita
+  por plata; **preguntar a `calidad_metricas`**, que ya renueva `_calculado_ts` por fecha.
+- **Decisión:** la tercera. Cada tabla de oro guarda `_version_silver` por fecha y se
+  recalculan las fechas donde plata es más nueva, más el día siguiente. Mismo patrón que
+  `_version_fuente` en las dimensiones; sin tablas ni conceptos extra. Coincide con la clase
+  (semana 10 y parcial: oro batch sobre la capa limpia), pero incremental.
+- **Consecuencia pendiente:** en clase, las alertas leen plata como stream porque allá el
+  `MERGE` solo inserta. Las nuestras deberán leer bronce (solo `append`) aplicando las mismas
+  reglas.
+
+### 2026-11-25 · Oro: resolución del tráfico y presencia en puertos
+
+- **Tráfico por celda y hora** (2023-06-01): res 4 → 27 302 filas/día; **res 5 → 70 876**
+  (10 288 celdas); res 6 → 163 914; res 7 → 371 365. Se eligió res 5: se dibuja bien en un mapa
+  nacional y el detalle fino sigue disponible en plata (`H3_Micro`).
+- **Presencia con grano diario** (buque × puerto × día) en vez de visitas: una visita puede
+  durar días y su recálculo no tendría límite; cada día depende solo de sí mismo y del anterior.
+  Las visitas se reconstruyen en una vista.
+- **Regla "en puerto"** (área: anillo de 5 celdas H3 res 8 alrededor del WPI, como en la Entrega
+  1), medida sobre 3 248 720 posiciones en áreas de puerto:
+
+  | Regla | En puerto | De esas, navegando ≥ 5 nudos | Pares buque–puerto |
+  |---|---|---|---|
+  | Entrega 1: `Status` ∈ {1, 5} o nulo | 1 598 151 | 77 384 | 9 449 |
+  | **Nueva: `Status` ∈ {1, 5} o `SOG` < 1** | 2 819 696 | **14 701** | 11 148 |
+
+  La nueva quita el 80 % de los falsos positivos (buques navegando con `Status` nulo) y suma
+  1,3 M posiciones de buques detenidos que reportan otro `Status`.
