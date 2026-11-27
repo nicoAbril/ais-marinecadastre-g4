@@ -1,0 +1,968 @@
+{
+  "datasets": [
+    {
+      "name": "65d4654c",
+      "displayName": "ds_mapa",
+      "queryLines": [
+        "SELECT\r\n",
+        "  h3,\r\n",
+        "  ROUND(AVG(lat_centro), 5)  AS lat,\r\n",
+        "  ROUND(AVG(lon_centro), 5)  AS lon,\r\n",
+        "  SUM(posiciones)            AS posiciones,\r\n",
+        "  MAX(buques)                AS buques_hora_pico,\r\n",
+        "  ROUND(AVG(sog_medio_nudos), 1) AS sog_medio,\r\n",
+        "    ROUND(LOG10(SUM(posiciones)), 2) AS intensidad\r\n",
+        "FROM oceanwatch_lakehouse.gold.trafico_celda_hora\r\n",
+        "WHERE fecha = :fecha\r\n",
+        "GROUP BY h3\r\n",
+        "HAVING SUM(posiciones) >= 20"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "d11407ad",
+      "displayName": "ds_trafico_hora",
+      "queryLines": [
+        "SELECT hora,\r\n",
+        "       SUM(posiciones) AS posiciones,\r\n",
+        "       SUM(buques)     AS buques_hora\r\n",
+        "FROM oceanwatch_lakehouse.gold.trafico_celda_hora\r\n",
+        "WHERE fecha = :fecha\r\n",
+        "GROUP BY hora\r\n",
+        "ORDER BY hora"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ab42c5fd",
+      "displayName": "ds_ranking_puertos",
+      "queryLines": [
+        "SELECT\r\n",
+        "  nombre_puerto,\r\n",
+        "  pais,\r\n",
+        "  COUNT(*)                                        AS visitas,\r\n",
+        "  SUM(CAST(se_detuvo AS INT))                     AS se_detuvieron,\r\n",
+        "  COUNT(*) - SUM(CAST(se_detuvo AS INT))          AS pasaron_de_largo,\r\n",
+        "  ROUND(AVG(duracion_horas), 1)                   AS duracion_media_h\r\n",
+        "FROM oceanwatch_lakehouse.gold.visitas_puerto\r\n",
+        "WHERE Fecha_Entrada = :fecha\r\n",
+        "GROUP BY nombre_puerto, pais\r\n",
+        "ORDER BY visitas DESC\r\n",
+        "LIMIT 20"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "392edcde",
+      "displayName": "ds_buques_en_puerto",
+      "queryLines": [
+        "SELECT\r\n",
+        "  nombre_puerto,\r\n",
+        "  pais,\r\n",
+        "  MMSI,\r\n",
+        "  VesselName,\r\n",
+        "  Descripcion_Tipo,\r\n",
+        "  entrada_ts,\r\n",
+        "  salida_ts,\r\n",
+        "  duracion_horas,\r\n",
+        "  se_detuvo,\r\n",
+        "  es_vigente,\r\n",
+        "  entrada_censurada\r\n",
+        "FROM oceanwatch_lakehouse.gold.visitas_puerto\r\n",
+        "WHERE entrada_ts < date_add(:fecha, 1)\r\n",
+        "  AND (salida_ts IS NULL OR salida_ts >= :fecha)\r\n",
+        "  AND duracion_horas >= :horas_minimas\r\n",
+        "ORDER BY nombre_puerto, entrada_ts"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "horas_minimas",
+          "keyword": "horas_minimas",
+          "dataType": "DECIMAL",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DECIMAL",
+              "values": [
+                {
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "59f66b43",
+      "displayName": "ds_anomalias",
+      "queryLines": [
+        "SELECT tipo, MMSI, VesselName, ts, LAT, LON, valor, detalle\r\n",
+        "FROM oceanwatch_lakehouse.gold.anomalias_dia\r\n",
+        "WHERE fecha = :fecha"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "d549dd2e",
+      "displayName": "ds_resumen",
+      "queryLines": [
+        "SELECT\r\n",
+        "  (SELECT COUNT(*) FROM oceanwatch_lakehouse.gold.trayectorias_diarias WHERE fecha = :fecha)       AS buques_activos,\r\n",
+        "  (SELECT ROUND(SUM(distancia_nm)) FROM oceanwatch_lakehouse.gold.trayectorias_diarias WHERE fecha = :fecha) AS millas_navegadas,\r\n",
+        "  (SELECT COUNT(*) FROM oceanwatch_lakehouse.gold.visitas_puerto WHERE Fecha_Entrada = :fecha)     AS entradas_a_puerto,\r\n",
+        "  (SELECT COUNT(DISTINCT MMSI) FROM oceanwatch_lakehouse.gold.anomalias_dia WHERE fecha = :fecha) AS buques_con_anomalias"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "DATE",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DATE",
+              "values": [
+                {
+                  "value": "2023-06-12T00:00:00.000"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "3b0370f4",
+      "displayName": "Tráfico Marítimo OceanWatch",
+      "layout": [
+        {
+          "widget": {
+            "name": "fecha",
+            "queries": [
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fc2f93101090739bb74a1c3306_fecha",
+                "query": {
+                  "datasetName": "65d4654c",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fce00e125b83e1481ebe5d1b96_fecha",
+                "query": {
+                  "datasetName": "ab42c5fd",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fd32ae16dc985f791d84104103_fecha",
+                "query": {
+                  "datasetName": "59f66b43",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcb4381aa2b7f9ae437c614a5f_fecha",
+                "query": {
+                  "datasetName": "d11407ad",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcf9fc1dd4b61c493e22dd6935_fecha",
+                "query": {
+                  "datasetName": "392edcde",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fd4a3f19d282e4c72ad0398271_fecha",
+                "query": {
+                  "datasetName": "d549dd2e",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Fecha",
+                  "fields": []
+                }
+              },
+              "widgetType": "filter-date-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fc2f93101090739bb74a1c3306_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fce00e125b83e1481ebe5d1b96_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fd32ae16dc985f791d84104103_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcb4381aa2b7f9ae437c614a5f_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcf9fc1dd4b61c493e22dd6935_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fd4a3f19d282e4c72ad0398271_fecha"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "horas-minimas-en-puerto",
+            "queries": [
+              {
+                "name": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcf9fc1dd4b61c493e22dd6935_horas_minimas",
+                "query": {
+                  "datasetName": "392edcde",
+                  "parameters": [
+                    {
+                      "name": "horas_minimas",
+                      "keyword": "horas_minimas"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "showDescription": false,
+                "title": {
+                  "value": "<span style=\"text-align:center;display:block;\">Horas Mínimas</span>\n\n<span style=\"text-align:center;display:block;\">en Puerto</span>",
+                  "fields": []
+                }
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "horas_minimas",
+                    "queryName": "parameter_dashboards/01f1e9fbca8f163a8bcb0effc710c43a/datasets/01f1e9fcf9fc1dd4b61c493e22dd6935_horas_minimas"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 0,
+            "width": 4,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "buques-activos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d549dd2e",
+                  "fields": [
+                    {
+                      "name": "sum(buques_activos)",
+                      "expression": "SUM(`buques_activos`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Buques Activos",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(buques_activos)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 1,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "15165278",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d549dd2e",
+                  "fields": [
+                    {
+                      "name": "sum(entradas_a_puerto)",
+                      "expression": "SUM(`entradas_a_puerto`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Entradas a Puerto",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(entradas_a_puerto)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "d007573c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d549dd2e",
+                  "fields": [
+                    {
+                      "name": "sum(millas_navegadas)",
+                      "expression": "SUM(`millas_navegadas`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Millas Navegadas",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(millas_navegadas)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 1,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "f34b4982",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d549dd2e",
+                  "fields": [
+                    {
+                      "name": "sum(buques_con_anomalias)",
+                      "expression": "SUM(`buques_con_anomalias`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Anomalías del Día",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(buques_con_anomalias)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 1,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "trafico1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "65d4654c",
+                  "fields": [
+                    {
+                      "name": "intensidad",
+                      "expression": "`intensidad`"
+                    },
+                    {
+                      "name": "lat",
+                      "expression": "`lat`"
+                    },
+                    {
+                      "name": "lon",
+                      "expression": "`lon`"
+                    },
+                    {
+                      "name": "buques_hora_pico",
+                      "expression": "`buques_hora_pico`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Tráfico",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "mark": {
+                "opacity": 0.28,
+                "size": -1.5
+              },
+              "widgetType": "symbol-map",
+              "encodings": {
+                "coordinates": {
+                  "latitude": {
+                    "fieldName": "lat"
+                  },
+                  "longitude": {
+                    "fieldName": "lon"
+                  }
+                },
+                "color": {
+                  "fieldName": "intensidad",
+                  "scale": {
+                    "type": "quantitative",
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "greenblue"
+                    },
+                    "reverse": true
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "buques_hora_pico"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "trafico-por-hora-del-dia",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d11407ad",
+                  "fields": [
+                    {
+                      "name": "hora",
+                      "expression": "`hora`"
+                    },
+                    {
+                      "name": "buques_hora",
+                      "expression": "`buques_hora`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Tráfico por Hora del Día UTC",
+                  "fields": []
+                }
+              },
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "hora",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "buques_hora",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "5532abca",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ab42c5fd",
+                  "fields": [
+                    {
+                      "name": "nombre_puerto",
+                      "expression": "`nombre_puerto`"
+                    },
+                    {
+                      "name": "sum(se_detuvieron)",
+                      "expression": "SUM(`se_detuvieron`)"
+                    },
+                    {
+                      "name": "sum(pasaron_de_largo)",
+                      "expression": "SUM(`pasaron_de_largo`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "nombre_puerto",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "fieldName": "sum(se_detuvieron)"
+                    },
+                    {
+                      "fieldName": "sum(pasaron_de_largo)"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "buques-en-puerto",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "392edcde",
+                  "fields": [
+                    {
+                      "name": "nombre_puerto",
+                      "expression": "`nombre_puerto`"
+                    },
+                    {
+                      "name": "VesselName",
+                      "expression": "`VesselName`"
+                    },
+                    {
+                      "name": "Descripcion_Tipo",
+                      "expression": "`Descripcion_Tipo`"
+                    },
+                    {
+                      "name": "entrada_ts",
+                      "expression": "`entrada_ts`"
+                    },
+                    {
+                      "name": "salida_ts",
+                      "expression": "`salida_ts`"
+                    },
+                    {
+                      "name": "duracion_horas",
+                      "expression": "`duracion_horas`"
+                    },
+                    {
+                      "name": "se_detuvo",
+                      "expression": "`se_detuvo`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "IN_RANGE(`duracion_horas`, NULL, NULL)"
+                    },
+                    {
+                      "expression": "`nombre_puerto` IN (`nombre_puerto`) OR TRUE"
+                    }
+                  ],
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`nombre_puerto`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Buques en Puerto",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "nombre_puerto"
+                  },
+                  {
+                    "fieldName": "VesselName"
+                  },
+                  {
+                    "fieldName": "Descripcion_Tipo"
+                  },
+                  {
+                    "fieldName": "entrada_ts"
+                  },
+                  {
+                    "fieldName": "salida_ts"
+                  },
+                  {
+                    "fieldName": "duracion_horas"
+                  },
+                  {
+                    "fieldName": "se_detuvo"
+                  }
+                ],
+                "rowOrder": [
+                  {
+                    "by": "column",
+                    "field": {
+                      "index": 0
+                    }
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 10,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "anomalias",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "59f66b43",
+                  "fields": [
+                    {
+                      "name": "LAT",
+                      "expression": "`LAT`"
+                    },
+                    {
+                      "name": "LON",
+                      "expression": "`LON`"
+                    },
+                    {
+                      "name": "detalle",
+                      "expression": "`detalle`"
+                    },
+                    {
+                      "name": "VesselName",
+                      "expression": "`VesselName`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Anomalías",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "symbol-map",
+              "encodings": {
+                "coordinates": {
+                  "latitude": {
+                    "fieldName": "LAT"
+                  },
+                  "longitude": {
+                    "fieldName": "LON"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "detalle"
+                  },
+                  {
+                    "fieldName": "VesselName"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 16,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
