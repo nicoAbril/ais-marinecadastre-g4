@@ -1,0 +1,149 @@
+# Job end-to-end del pipeline OceanWatch (Entrega 2, requisito 3).
+#
+#   00_preparacion ─► 01_productor ─► 02_bronze ─► 03_silver ─► 04_gold
+#                                                    ─► 04d_gold_anomalias ─► 04e_gold_servicio ─► 05_ml
+#
+# Las tareas de oro (04, 04d, 04e) usan el mismo patrón idempotente: recalculan solo las fechas
+# cuya versión de plata cambió (comun.fechas_pendientes) y las sobrescriben con replaceWhere.
+#
+# En cadena: preparacion crea el catálogo, los esquemas y los Volumes que usan el productor y
+# bronce; en un workspace nuevo, la primera corrida falla si el productor arranca antes.
+#
+# Todas las tareas corren en serverless (sin cluster declarado). Los parámetros del job llegan a
+# cada notebook como widgets con el mismo nombre; cada notebook usa solo los suyos.
+
+resources:
+  jobs:
+    oceanwatch_pipeline:
+      name: oceanwatch_pipeline
+      description: >
+        Pipeline diario AIS: entrega el archivo del día al Volume de llegadas, lo ingiere en
+        bronce (Auto Loader), aplica compuertas de calidad y deduplicación en plata (MERGE
+        idempotente) y recalcula oro. `fecha` es la fecha del día; el productor la traduce a un
+        día de datos de 2023 (reloj simulado). Backfill en una sola corrida: `fecha` + `fecha_fin`.
+
+      # Dos corridas a la vez competirían por los mismos checkpoints de streaming: una sola
+      # corrida activa; las demás esperan en cola.
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+
+      # Sin fecha límite: modo estándar (más barato, arranque en minutos).
+      performance_target: STANDARD
+
+      parameters:
+        - name: catalogo
+          default: ${var.catalogo}
+        - name: aplicar_permisos
+          default: ${var.aplicar_permisos}
+        # La fecha del día. Con `fecha_fin`, una sola corrida procesa todo el rango
+        # [fecha, fecha_fin] (backfill o recuperar días que no corrieron).
+        - name: fecha
+          default: "{{job.start_time.iso_date}}"
+        - name: fecha_fin
+          default: ""
+        - name: reenviar
+          default: "false"   # demo: reenvía el archivo completo (duplicados)
+        - name: inyectar_invalidos
+          default: "false"   # demo: una fila inválida por motivo de cuarentena
+        - name: reprocesar_desde_cero
+          default: "false"   # demo de tolerancia a fallos: borra el checkpoint de plata
+        - name: reentrenar
+          default: "false"   # 05_ml: entrena una versión nueva del modelo y la deja como @champion
+        - name: recalcular_todo
+          default: "false"   # recalcula todas las fechas de oro
+
+      # Diario a las 06:00 (Bogotá). Para detener la simulación diaria: PAUSED y volver a desplegar.
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: America/Bogota
+        pause_status: UNPAUSED
+
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+        no_alert_for_skipped_runs: true
+
+      tags:
+        proyecto: oceanwatch
+        entrega: "2"
+        aidevkit_project: ai-dev-kit
+
+      tasks:
+        - task_key: preparacion
+          description: Estructura de Unity Catalog y dimensiones de referencia (solo reconstruye si cambió una fuente)
+          notebook_task:
+            notebook_path: ../pipeline/00_preparacion.py
+          max_retries: 2
+          min_retry_interval_millis: 300000   # 5 min: fuentes externas (NGA, GitHub)
+          timeout_seconds: 3600
+
+        - task_key: productor
+          depends_on:
+            - task_key: preparacion
+          description: Entrega el CSV del día al Volume landing/ais/entrantes
+          notebook_task:
+            notebook_path: ../pipeline/01_productor.py
+          max_retries: 3
+          min_retry_interval_millis: 600000   # 10 min: descarga de NOAA
+          timeout_seconds: 3600
+
+        - task_key: bronze
+          depends_on:
+            - task_key: productor
+          description: Auto Loader → bronze.ais_posiciones_raw (solo append)
+          notebook_task:
+            notebook_path: ../pipeline/02_bronze.py
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          description: Compuertas, cuarentena, MERGE idempotente y métricas de calidad
+          notebook_task:
+            notebook_path: ../pipeline/03_silver.py
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          timeout_seconds: 7200
+
+        - task_key: gold
+          depends_on:
+            - task_key: silver
+          description: Recalcula las fechas afectadas de oro y ejecuta el chequeo de salud
+          notebook_task:
+            notebook_path: ../pipeline/04_gold.py
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        - task_key: anomalias
+          depends_on:
+            - task_key: gold
+          description: Anomalías del día (saltos imposibles, SOG inconsistente, MMSI clonados) → gold.anomalias_dia
+          notebook_task:
+            notebook_path: ../pipeline/04d_gold_anomalias.ipynb
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        - task_key: servicio
+          depends_on:
+            - task_key: anomalias
+          description: Tablas de servicio del tablero (kpi_dia, trafico_celda_dia, puerto_dia, ...) con cuadre contra oro
+          notebook_task:
+            notebook_path: ../pipeline/04e_gold_servicio.ipynb
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        - task_key: ml
+          depends_on:
+            - task_key: servicio
+          description: Anomalías de velocidad por viaje con IsolationForest (MLflow, modelo en UC); entrena solo si no hay @champion
+          notebook_task:
+            notebook_path: ../pipeline/05_ml.py
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600

@@ -1,0 +1,101 @@
+vessel_type,descripcion,categoria
+0,Not available,No disponible
+1,Reserved,Otros / reservado
+2,Reserved,Otros / reservado
+3,Reserved,Otros / reservado
+4,Reserved,Otros / reservado
+5,Reserved,Otros / reservado
+6,Reserved,Otros / reservado
+7,Reserved,Otros / reservado
+8,Reserved,Otros / reservado
+9,Reserved,Otros / reservado
+10,Reserved,Otros / reservado
+11,Reserved,Otros / reservado
+12,Reserved,Otros / reservado
+13,Reserved,Otros / reservado
+14,Reserved,Otros / reservado
+15,Reserved,Otros / reservado
+16,Reserved,Otros / reservado
+17,Reserved,Otros / reservado
+18,Reserved,Otros / reservado
+19,Reserved,Otros / reservado
+20,Wing in ground (WIG) - Type 20,WIG
+21,Wing in ground (WIG) - Type 21,WIG
+22,Wing in ground (WIG) - Type 22,WIG
+23,Wing in ground (WIG) - Type 23,WIG
+24,Wing in ground (WIG) - Type 24,WIG
+25,Wing in ground (WIG) - Type 25,WIG
+26,Wing in ground (WIG) - Type 26,WIG
+27,Wing in ground (WIG) - Type 27,WIG
+28,Wing in ground (WIG) - Type 28,WIG
+29,Wing in ground (WIG) - Type 29,WIG
+30,Fishing,Pesca
+31,Towing,Remolque
+32,Towing exceeds 200m or 25m breadth,Remolque
+33,Dredging or underwater ops,Servicio y especiales
+34,Diving ops,Servicio y especiales
+35,Military ops,Servicio y especiales
+36,Sailing,Recreo
+37,Pleasure Craft,Recreo
+38,Reserved,Otros / reservado
+39,Reserved,Otros / reservado
+40,High speed craft - Type 40,Alta velocidad
+41,High speed craft - Type 41,Alta velocidad
+42,High speed craft - Type 42,Alta velocidad
+43,High speed craft - Type 43,Alta velocidad
+44,High speed craft - Type 44,Alta velocidad
+45,High speed craft - Type 45,Alta velocidad
+46,High speed craft - Type 46,Alta velocidad
+47,High speed craft - Type 47,Alta velocidad
+48,High speed craft - Type 48,Alta velocidad
+49,High speed craft - Type 49,Alta velocidad
+50,Pilot Vessel,Servicio y especiales
+51,Search and Rescue vessel,Servicio y especiales
+52,Tug,Remolque
+53,Port Tender,Servicio y especiales
+54,Anti-pollution equipment,Servicio y especiales
+55,Law Enforcement,Servicio y especiales
+56,Spare Local Vessel,Otros / reservado
+57,Spare Local Vessel,Otros / reservado
+58,Medical Transport,Servicio y especiales
+59,Noncombatant ship,Servicio y especiales
+60,Passenger - Type 60,Pasajeros
+61,Passenger - Type 61,Pasajeros
+62,Passenger - Type 62,Pasajeros
+63,Passenger - Type 63,Pasajeros
+64,Passenger - Type 64,Pasajeros
+65,Passenger - Type 65,Pasajeros
+66,Passenger - Type 66,Pasajeros
+67,Passenger - Type 67,Pasajeros
+68,Passenger - Type 68,Pasajeros
+69,Passenger - Type 69,Pasajeros
+70,Cargo - Type 70,Carga
+71,Cargo - Type 71,Carga
+72,Cargo - Type 72,Carga
+73,Cargo - Type 73,Carga
+74,Cargo - Type 74,Carga
+75,Cargo - Type 75,Carga
+76,Cargo - Type 76,Carga
+77,Cargo - Type 77,Carga
+78,Cargo - Type 78,Carga
+79,Cargo - Type 79,Carga
+80,Tanker - Type 80,Tanquero
+81,Tanker - Type 81,Tanquero
+82,Tanker - Type 82,Tanquero
+83,Tanker - Type 83,Tanquero
+84,Tanker - Type 84,Tanquero
+85,Tanker - Type 85,Tanquero
+86,Tanker - Type 86,Tanquero
+87,Tanker - Type 87,Tanquero
+88,Tanker - Type 88,Tanquero
+89,Tanker - Type 89,Tanquero
+90,Other Type - Type 90,Otros / reservado
+91,Other Type - Type 91,Otros / reservado
+92,Other Type - Type 92,Otros / reservado
+93,Other Type - Type 93,Otros / reservado
+94,Other Type - Type 94,Otros / reservado
+95,Other Type - Type 95,Otros / reservado
+96,Other Type - Type 96,Otros / reservado
+97,Other Type - Type 97,Otros / reservado
+98,Other Type - Type 98,Otros / reservado
+99,Other Type - Type 99,Otros / reservado

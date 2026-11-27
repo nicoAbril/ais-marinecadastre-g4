@@ -1,19 +1,54 @@
-# This is a Declarative Automation Bundle definition for ais-marinecadastre-g4.
-# The Databricks extension requires databricks.yml configuration file.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Bundle de la Entrega 2: el job de Lakeflow del pipeline OceanWatch, definido como código.
+# `databricks bundle deploy` crea o actualiza el job (nunca lo duplica); no lo ejecuta.
+# Docs: https://docs.databricks.com/dev-tools/bundles/index.html
 
 bundle:
   name: ais-marinecadastre-g4
 
+include:
+  - resources/*.yml
+
+# Se sube al workspace lo que está en git (respeta .gitignore), menos los notebooks de la
+# Entrega 1, que el job no usa.
+sync:
+  exclude:
+    - notebooks/**
+
+variables:
+  catalogo:
+    description: Catálogo de Unity Catalog donde vive el lakehouse (parámetro `catalogo` de todas las tareas)
+    default: oceanwatch_lakehouse
+  warehouse_id:
+    description: SQL warehouse que ejecuta las consultas del tablero
+    lookup:
+      warehouse: Serverless Starter Warehouse
+  aplicar_permisos:
+    description: "false en workspaces sin grupos de cuenta (Free Edition): 00_preparacion omite los GRANT"
+    default: "true"
+
 targets:
+  # Workspace de la Entrega 1. Sin `mode: development`: ese modo fuerza la pausa de los horarios
+  # y el requisito 3 pide demostrar la ejecución programada.
   dev:
-    mode: development
     default: true
     workspace:
       host: https://dbc-b1de8d0d-7bd3.cloud.databricks.com
+      profile: uniandes
 
-  ## Optionally, there could be 'staging' or 'prod' targets here.
-  #
-  # prod:
-  #   workspace:
-  #     host: https://dbc-b1de8d0d-7bd3.cloud.databricks.com
+  # Free Edition de Edgar: integración de los puntos 3 y 4. Catálogo aparte porque
+  # `oceanwatch_lakehouse` ya existe allí con otra versión; sin grupos de cuenta; horario en pausa
+  # para no gastar la cuota diaria (las corridas se lanzan a mano).
+  edgar_free:
+    workspace:
+      host: https://dbc-50734aed-c1ba.cloud.databricks.com
+    variables:
+      catalogo: oceanwatch_dev
+      aplicar_permisos: "false"
+    resources:
+      jobs:
+        oceanwatch_pipeline:
+          schedule:
+            pause_status: PAUSED
+
+  # Pendiente: target `institucional` (otro host y, si aplica, otro catálogo) cuando se aclaren
+  # los recursos del workspace del curso.
