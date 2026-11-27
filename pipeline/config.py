@@ -158,6 +158,11 @@ ANOM_VEL_IMPLICITA_MIN_KN = 15.0   # ...con velocidad implícita ≥ 15 nudos...
 ANOM_DISTANCIA_MIN_NM = 0.5        # ...y un salto de al menos 0,5 nm (descarta el ruido del GPS de un buque amarrado)
 ANOM_CLON_DISTANCIA_MIN_NM = 50.0  # mismo MMSI, dos MMSI_Real en el mismo minuto a más de 50 nm = clonación
 
+
+# Mapa de intensidad del tablero (04e_gold_servicio): resolución H3 de gold.trafico_celda_dia.
+# Provisional: se confirma con la celda de medición (celdas por resolución).
+RES_MAPA = 6
+
 # Histéresis de visitas: salir del área y volver al mismo puerto en menos de esto es la misma
 # visita. Con "detenido en el área" como estado, la velocidad oscilando alrededor de 1 nudo
 # generaba 33 182 "arribos" el 2023-06-01 (172 de un mismo buque); con estancia en el área +
