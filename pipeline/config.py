@@ -152,6 +152,12 @@ PUERTO_RES_H3 = 8
 PUERTO_K_ANILLOS = 5
 EN_PUERTO_STATUS = (1, 5)
 EN_PUERTO_SOG_MAX = 1.0
+# Anomalías del día (04d_gold_anomalias). Valores iniciales: se revisan con la celda de sensibilidad.
+ANOM_SOG_DETENIDO_MAX = 1.0        # SOG reportado ≤ 1 nudo...
+ANOM_VEL_IMPLICITA_MIN_KN = 15.0   # ...con velocidad implícita ≥ 15 nudos...
+ANOM_DISTANCIA_MIN_NM = 0.5        # ...y un salto de al menos 0,5 nm (descarta el ruido del GPS de un buque amarrado)
+ANOM_CLON_DISTANCIA_MIN_NM = 50.0  # mismo MMSI, dos MMSI_Real en el mismo minuto a más de 50 nm = clonación
+
 # Histéresis de visitas: salir del área y volver al mismo puerto en menos de esto es la misma
 # visita. Con "detenido en el área" como estado, la velocidad oscilando alrededor de 1 nudo
 # generaba 33 182 "arribos" el 2023-06-01 (172 de un mismo buque); con estancia en el área +
