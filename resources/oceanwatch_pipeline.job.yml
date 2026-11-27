@@ -1,6 +1,10 @@
 # Job end-to-end del pipeline OceanWatch (Entrega 2, requisito 3).
 #
 #   00_preparacion ─► 01_productor ─► 02_bronze ─► 03_silver ─► 04_gold
+#                                                    ─► 04d_gold_anomalias ─► 04e_gold_servicio
+#
+# Las tareas de oro (04, 04d, 04e) usan el mismo patrón idempotente: recalculan solo las fechas
+# cuya versión de plata cambió (comun.fechas_pendientes) y las sobrescriben con replaceWhere.
 #
 # En cadena: preparacion crea el catálogo, los esquemas y los Volumes que usan el productor y
 # bronce; en un workspace nuevo, la primera corrida falla si el productor arranca antes.
@@ -16,7 +20,7 @@ resources:
         Pipeline diario AIS: entrega el archivo del día al Volume de llegadas, lo ingiere en
         bronce (Auto Loader), aplica compuertas de calidad y deduplicación en plata (MERGE
         idempotente) y recalcula oro. `fecha` es la fecha del día; el productor la traduce a un
-        día de datos de 2023 (reloj simulado). Backfill: Run now ▾ → Run backfill.
+        día de datos de 2023 (reloj simulado). Backfill en una sola corrida: `fecha` + `fecha_fin`.
 
       # Dos corridas a la vez competirían por los mismos checkpoints de streaming: una sola
       # corrida activa; las demás esperan en cola.
@@ -32,9 +36,12 @@ resources:
           default: ${var.catalogo}
         - name: aplicar_permisos
           default: ${var.aplicar_permisos}
-        # La fecha del día. En un backfill, Databricks la reemplaza por {{backfill.iso_date}}.
+        # La fecha del día. Con `fecha_fin`, una sola corrida procesa todo el rango
+        # [fecha, fecha_fin] (backfill o recuperar días que no corrieron).
         - name: fecha
           default: "{{job.start_time.iso_date}}"
+        - name: fecha_fin
+          default: ""
         - name: reenviar
           default: "false"   # demo: reenvía el archivo completo (duplicados)
         - name: inyectar_invalidos
@@ -109,4 +116,24 @@ resources:
           min_retry_interval_millis: 60000
           timeout_seconds: 3600
 
-        # Pendiente: task `ml` (05_ml) después de gold.
+        - task_key: anomalias
+          depends_on:
+            - task_key: gold
+          description: Anomalías del día (saltos imposibles, SOG inconsistente, MMSI clonados) → gold.anomalias_dia
+          notebook_task:
+            notebook_path: ../pipeline/04d_gold_anomalias.ipynb
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        - task_key: servicio
+          depends_on:
+            - task_key: anomalias
+          description: Tablas de servicio del tablero (kpi_dia, trafico_celda_dia, puerto_dia, ...) con cuadre contra oro
+          notebook_task:
+            notebook_path: ../pipeline/04e_gold_servicio.ipynb
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 3600
+
+        # Pendiente: task `ml` (05_ml) después de servicio.

@@ -509,6 +509,12 @@ else:
 # MAGIC   celdas, con mediana de 82 buques y máximo de 338. Se guarda como semilla versionada, y no se
 # MAGIC   recalcula en cada corrida, para que la máscara sea idéntica en cualquier workspace y no cambie
 # MAGIC   al entrar datos nuevos (la conciliación global de plata depende de eso).
+# MAGIC   **Cómo se calculó** (una sola vez, sobre el bronce de esos 12 días): posiciones con MMSI de
+# MAGIC   9 dígitos y coordenadas en rango → celda H3 res 7 → `count_distinct(MMSI)` por celda → se
+# MAGIC   quedan las celdas con `MASCARA_MIN_BUQUES` (5) o más buques **que la máscara de entonces
+# MAGIC   consideraba tierra firme** → `seeds/h3_celdas_transitadas.csv`. Recalibrar es repetir ese
+# MAGIC   cálculo y reemplazar la semilla; su sha256 cambia la versión de la máscara y esta tarea la
+# MAGIC   reconstruye sola.
 # MAGIC
 # MAGIC   **Resultado tras reconstruir** (la franja de 3 anillos se mide contra cualquier agua: mar,
 # MAGIC   lago o río): máscara de 2 099 026 celdas (antes 3 207 452) y **109 897 filas "en tierra"
@@ -551,7 +557,7 @@ for capa, (_, url) in config.CAPAS_NATURAL_EARTH.items():
         errores_fuentes.append(str(e))
         print(f"ERROR Natural Earth {capa} (la máscara no se construye en esta corrida): {e}")
 
-# Celdas transitadas: semilla versionada (99_utilidades, "Calibración de la máscara").
+# Celdas transitadas: semilla versionada (cómo se calculó: sección B.5, "Por qué restar las celdas transitadas").
 with open(config.SEMILLA_CELDAS_TRANSITADAS, "rb") as fh:
     snap_transitadas = registrar_snapshot("semillas/h3_celdas_transitadas", fh.read(), "csv")
 print(f"semilla celdas transitadas: {'NUEVO' if snap_transitadas.nuevo else 'sin cambios'} -> {snap_transitadas.ruta}")

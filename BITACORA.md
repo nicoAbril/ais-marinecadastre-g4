@@ -73,6 +73,8 @@ está en la sección *Decisiones* de cada notebook.
   idénticas.
 - **Compuertas y cuarentena con causa**: reglas duras con prioridad (`motivo_principal`) y
   reglas suaves que anulan el valor y dejan bandera; métricas por fecha en `calidad_metricas`.
+  `SOG` implausible (> 60 nudos o negativo) pasó de bandera suave a regla dura: el enunciado pide
+  *"velocidades plausibles"* como compuerta, y son ~54 filas por día.
 
 ## Semana 12 — Orquestación
 
@@ -81,8 +83,9 @@ está en la sección *Decisiones* de cada notebook.
   - Tareas en cadena `preparacion → productor → bronze → silver → gold` (`preparacion` crea los
     Volumes que usa el productor; en paralelo, la primera corrida en un workspace nuevo fallaría).
   - Parámetro `fecha` = la fecha del día (`{{job.start_time.iso_date}}`), que el productor traduce
-    a un día de 2023. Backfill nativo (*Run backfill*): una corrida por día con
-    `{{backfill.iso_date}}`.
+    a un día de 2023. Backfill en una sola corrida con `fecha` + `fecha_fin` (el productor entrega
+    el rango y las demás capas lo procesan junto); también funciona el backfill nativo (*Run
+    backfill*, una corrida por día con `{{backfill.iso_date}}`).
   - Horario diario 06:00 (Bogotá) activo. El target del bundle no usa `mode: development`:
     ese modo fuerza la pausa de los horarios (`cannot set trigger pause status to UNPAUSED`).
   - Reintentos según la causa probable de falla (red: más y más espaciados), una sola corrida a
@@ -96,7 +99,11 @@ está en la sección *Decisiones* de cada notebook.
 - **Máscara "en el agua"**: se guarda la tierra (H3 res 7), no el agua. Calcularla por mosaicos
   de 5° bajó de 546 s a ~10 s. La primera versión mandaba el 11,4 % del día a "en tierra"
   (puertos y canales que Natural Earth 1:10m no dibuja); con franja costera de 3 anillos y
-  zona portuaria de 8 quedó en 1,25 %.
+  zona portuaria de 8 quedó en 1,25 %. Restando además 222 "celdas transitadas" (5 o más buques
+  distintos; calibradas una vez con 12 días y congeladas como semilla) baja a 0,06 %.
+- **Cambiar una regla de plata exige rehacer plata desde bronce**: el `MERGE` agrega o mejora
+  filas, pero nunca saca una que ya está. Oro no se borra: recalcula solo al ver versiones nuevas
+  de plata.
 - **World Port Index caído (HTTP 503)**: semilla de respaldo en el repo con el CSV de la Entrega 1.
 - **Modo ANSI**: `try_cast` en vez de `cast` (el WPI trae `'7950.0'` en un campo entero).
 - **SDK distinto en local y en el job**: la primera corrida del job falló en el productor con
@@ -131,5 +138,8 @@ está en la sección *Decisiones* de cada notebook.
   por día, máximo 11 por buque y puerto.
 - **Plata, 2023-06-01**: 17 617 817 recibidas = 8 691 916 plata + 116 814 cuarentena + 8 809 087
   duplicados (el reenvío completo). Las 8 filas inyectadas cayeron cada una en su motivo.
+- **Anomalías y tablas de servicio** (`04d`, `04e`): tareas del mismo job después de oro, con el
+  patrón de oro movido a `comun.py` (fechas pendientes por versión de plata + `replaceWhere`).
+  `04e` arma una tabla por vista del tablero y verifica que cuadra con oro (posiciones y arribos).
 - **Alcance**: sin alertas con watermark ni tabla de auditoría; el monitoreo es el job más un
   chequeo de salud al final de `04_gold` (oro = plata por fecha).

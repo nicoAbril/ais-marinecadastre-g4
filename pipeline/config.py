@@ -130,7 +130,7 @@ MASCARA_K_PUERTOS = 8      # radio alrededor de cada puerto del WPI considerado 
 # Celdas transitadas: una celda H3 res 7 por la que pasan MASCARA_MIN_BUQUES o más MMSI distintos no
 # es tierra firme (canales, dársenas y ríos que Natural Earth 1:10m no dibuja). Se calibra una vez
 # y se congela como semilla versionada, para que la máscara sea reproducible en cualquier workspace
-# y no cambie sola al entrar datos (99_utilidades, celda "Calibración de la máscara").
+# y no cambie sola al entrar datos (cálculo documentado en 00_preparacion, sección B.5).
 MASCARA_MIN_BUQUES = 5
 SEMILLA_CELDAS_TRANSITADAS = "seeds/h3_celdas_transitadas.csv"  # relativa a pipeline/
 

@@ -29,7 +29,8 @@
 # MAGIC | Parámetro | Por defecto | Uso |
 # MAGIC |---|---|---|
 # MAGIC | `catalogo` | `oceanwatch_lakehouse` | Catálogo destino |
-# MAGIC | `fecha` | hoy (UTC) | **Fecha del día** (real, `YYYY-MM-DD`). En el job: `{{job.start_time.iso_date}}`; en un backfill, `{{backfill.iso_date}}` |
+# MAGIC | `fecha` | hoy (UTC) | **Fecha del día** (real, `YYYY-MM-DD`). En el job: `{{job.start_time.iso_date}}` |
+# MAGIC | `fecha_fin` | vacío | Si se da, entrega todos los días de `fecha` a `fecha_fin` en **una sola corrida** (backfill o recuperar un hueco) |
 # MAGIC | `reenviar` | `false` | Además entrega una copia del día con otro nombre (duplicados) |
 # MAGIC | `inyectar_invalidos` | `false` | Además entrega un archivo pequeño con una fila por motivo de cuarentena |
 # MAGIC
@@ -50,8 +51,9 @@
 # MAGIC   la fecha del día (real) y se traduce a un día de datos:
 # MAGIC   `DIA_CERO_DATOS + (fecha − INICIO_SIMULACION)`. Cada día real entrega un día distinto de
 # MAGIC   datos; dos corridas con la misma fecha entregan el mismo archivo (la segunda no hace
-# MAGIC   nada). Un backfill de días reales pasados ("Run backfill" del job) entrega los días de datos
-# MAGIC   correspondientes, uno por corrida: 2026-11-19 → 2023-06-02.
+# MAGIC   nada). Con `fecha_fin`, una sola corrida entrega todo el rango (2026-11-19 … 2026-11-27 →
+# MAGIC   2023-06-02 … 2023-06-10) y el resto del job lo procesa junto. También funciona el backfill
+# MAGIC   nativo del job (*Run backfill*, una corrida por día con `{{backfill.iso_date}}`).
 # MAGIC - **Anomalías en archivos aparte, nunca mezcladas con los datos reales.** Los duplicados
 # MAGIC   reales son ~0,003 % y no alcanzan para demostrar la deduplicación ni la cuarentena; por eso
 # MAGIC   se pueden inyectar, pero en archivos con nombre propio: bronce guarda el archivo de origen
@@ -77,6 +79,7 @@ w = config.obtener_workspace()
 
 CATALOGO = config.leer_parametro("catalogo", config.CATALOGO_DEFECTO)
 FECHA = config.leer_parametro("fecha", "")  # fecha del día (real); vacía = hoy UTC
+FECHA_FIN = config.leer_parametro("fecha_fin", "")  # opcional: último día real del rango
 REENVIAR = config.leer_parametro("reenviar", "false").lower() == "true"
 INYECTAR_INVALIDOS = config.leer_parametro("inyectar_invalidos", "false").lower() == "true"
 
@@ -101,9 +104,12 @@ def dia_de_datos(fecha_del_dia: date) -> date:
     return a_fecha(config.DIA_CERO_DATOS) + timedelta(days=transcurridos)
 
 
-fecha_del_dia = a_fecha(FECHA) if FECHA else datetime.now(timezone.utc).date()
-dias = [dia_de_datos(fecha_del_dia)]
-print(f"Fecha del día {fecha_del_dia} → datos del {dias[0]}")
+inicio = a_fecha(FECHA) if FECHA else datetime.now(timezone.utc).date()
+fin = a_fecha(FECHA_FIN) if FECHA_FIN else inicio
+assert fin >= inicio, f"fecha_fin ({fin}) es anterior a fecha ({inicio})"
+reales = [inicio + timedelta(days=i) for i in range((fin - inicio).days + 1)]
+dias = [dia_de_datos(d) for d in reales]
+print(f"Fechas del día {reales[0]} … {reales[-1]} → datos del {dias[0]} … {dias[-1]} ({len(dias)} día(s))")
 print(f"Reenviar: {REENVIAR} · Inyectar inválidos: {INYECTAR_INVALIDOS}")
 
 # COMMAND ----------

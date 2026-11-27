@@ -22,9 +22,6 @@ variables:
     description: "false en workspaces sin grupos de cuenta (Free Edition): 00_preparacion omite los GRANT"
     default: "true"
 
-  # Free Edition de Edgar: integración de los puntos 3 y 4. Catálogo aparte porque
-  # `oceanwatch_lakehouse` ya existe allí con otra versión; sin grupos de cuenta; horario en pausa
-  
 targets:
   # Workspace de la Entrega 1. Sin `mode: development`: ese modo fuerza la pausa de los horarios
   # y el requisito 3 pide demostrar la ejecución programada.
@@ -48,10 +45,6 @@ targets:
         oceanwatch_pipeline:
           schedule:
             pause_status: PAUSED
-
-  # Pendiente: target `institucional` (otro host y, si aplica, otro catálogo) cuando se aclaren
-  # los recursos del workspace del curso.
-
 
   # Pendiente: target `institucional` (otro host y, si aplica, otro catálogo) cuando se aclaren
   # los recursos del workspace del curso.

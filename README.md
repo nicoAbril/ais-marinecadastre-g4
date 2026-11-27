@@ -133,10 +133,12 @@ databricks bundle deploy --target dev                         # sube pipeline/ y
 databricks bundle run oceanwatch_pipeline --target dev        # corrida con la fecha de hoy
 databricks bundle run oceanwatch_pipeline --target dev \
   --params fecha=2026-11-19                                   # un día puntual (→ datos 2023-06-02)
+databricks bundle run oceanwatch_pipeline --target dev \
+  --params fecha=2026-11-19,fecha_fin=2026-11-27              # un rango en una sola corrida
 ```
 
 ```
-preparacion ─► productor ─► bronze ─► silver ─► gold
+preparacion ─► productor ─► bronze ─► silver ─► gold ─► anomalias ─► servicio
 ```
 
 **Operación:**
@@ -146,10 +148,11 @@ preparacion ─► productor ─► bronze ─► silver ─► gold
   productor la traduce a un día de datos con el reloj simulado:
   `DIA_CERO_DATOS + (fecha − INICIO_SIMULACION)` (en `config.py`). Correr dos veces con la misma
   fecha no entrega nada nuevo.
-- **Backfill o recuperar un hueco:** en el job, *Run now ▾ → Run backfill* con el rango de días
-  reales. Databricks crea una corrida por día con `fecha = {{backfill.iso_date}}`, en serie
-  (`max_concurrent_runs = 1`). Ej.: 2026-11-19 … 2026-11-27 entrega los datos del 2023-06-02 al
-  2023-06-10.
+- **Backfill o recuperar un hueco, en una sola corrida:** *Run now with different parameters*
+  con `fecha` = primer día real y `fecha_fin` = último. El productor entrega todos los días y el
+  resto del job los procesa juntos. Ej.: 2026-11-19 … 2026-11-27 entrega los datos del 2023-06-02
+  al 2023-06-10. Alternativa: *Run now ▾ → Run backfill* (una corrida por día, en serie, con
+  `fecha = {{backfill.iso_date}}`).
 - **Demos:** `reenviar` / `inyectar_invalidos` (duplicados y cuarentena),
   `reprocesar_desde_cero` (tolerancia a fallos: plata sin cambios), `recalcular_todo` (oro).
   Son para corridas sueltas (*Run now with different parameters*). En un backfill se deja todo
