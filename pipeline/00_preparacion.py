@@ -68,6 +68,7 @@ spark = config.obtener_spark()
 w = config.obtener_workspace()
 
 CATALOGO = config.leer_parametro("catalogo", config.CATALOGO_DEFECTO)
+APLICAR_PERMISOS = config.leer_parametro("aplicar_permisos", "true").lower() == "true"
 cfg = config.Config(CATALOGO)
 print(f"Catálogo: {cfg.catalogo}")
 
@@ -160,22 +161,29 @@ for (capa, nombre), (comentario, subcarpetas) in config.VOLUMES.items():
 # MAGIC   falla al final con el nombre del grupo: sin roles no hay gobernanza.
 # MAGIC - `GRANT` es idempotente: repetirlo no cambia nada. Solo agrega: quitar un privilegio de
 # MAGIC   `config.ROLES` no lo revoca (se hace con `REVOKE` a mano, deliberadamente).
+# MAGIC
+# MAGIC - **Parámetro `aplicar_permisos`** (`true` por defecto). En un workspace sin grupos de cuenta
+# MAGIC  (Databricks Free Edition, usado para desarrollo) se pasa `false` y la tarea omite los `GRANT`
+# MAGIC  sin fallar. En el workspace institucional siempre se aplican.
 
 # COMMAND ----------
 
 errores_permisos: list[str] = []
-for grupo, (descripcion, alcance) in config.ROLES.items():
-    try:
-        if alcance == "catalogo":
-            spark.sql(f"GRANT ALL PRIVILEGES ON CATALOG {cfg.catalogo} TO `{grupo}`")
-        else:
-            spark.sql(f"GRANT USE CATALOG ON CATALOG {cfg.catalogo} TO `{grupo}`")
-            for capa, privilegios in alcance.items():
-                spark.sql(f"GRANT {', '.join(privilegios)} ON SCHEMA {cfg.esquema(capa)} TO `{grupo}`")
-        print(f"OK {grupo}: {descripcion}")
-    except Exception as e:
-        errores_permisos.append(f"{grupo}: {str(e).splitlines()[0][:200]}")
-        print(f"FALLA {grupo}: {errores_permisos[-1]}")
+if not APLICAR_PERMISOS:
+    print("aplicar_permisos=false: se omiten los GRANT (entorno sin grupos de cuenta, p. ej. Free Edition).")
+else:
+    for grupo, (descripcion, alcance) in config.ROLES.items():
+        try:
+            if alcance == "catalogo":
+                spark.sql(f"GRANT ALL PRIVILEGES ON CATALOG {cfg.catalogo} TO `{grupo}`")
+            else:
+                spark.sql(f"GRANT USE CATALOG ON CATALOG {cfg.catalogo} TO `{grupo}`")
+                for capa, privilegios in alcance.items():
+                    spark.sql(f"GRANT {', '.join(privilegios)} ON SCHEMA {cfg.esquema(capa)} TO `{grupo}`")
+            print(f"OK {grupo}: {descripcion}")
+        except Exception as e:
+            errores_permisos.append(f"{grupo}: {str(e).splitlines()[0][:200]}")
+            print(f"FALLA {grupo}: {errores_permisos[-1]}")
 
 # COMMAND ----------
 
