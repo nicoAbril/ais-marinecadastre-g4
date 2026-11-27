@@ -116,6 +116,14 @@ def correr_bronce(nombre_consulta: str) -> list[dict]:
     consulta.awaitTermination()
     return list(consulta.recentProgress)
 
+
+
+def version_actual(tabla: str) -> int:
+    """Última versión de la tabla Delta (-1 si todavía no existe)."""
+    if not spark.catalog.tableExists(tabla):
+        return -1
+    return spark.sql(f"DESCRIBE HISTORY {tabla} LIMIT 1").first().version
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -123,16 +131,28 @@ def correr_bronce(nombre_consulta: str) -> list[dict]:
 
 # COMMAND ----------
 
+v_antes = version_actual(T_BRONZE)
 progreso = correr_bronce("bronze_ingesta")
 
-# Cada elemento es un StreamingQueryProgress: se lee por atributos (numInputRows, batchId, ...)
-lotes = [p for p in progreso if (p.numInputRows or 0) > 0]
-filas_ingesta = sum(p.numInputRows for p in lotes)
-print(f"Micro-lotes con datos: {len(lotes)}")
-for p in lotes:
-    print(f"  lote {p.batchId}: {p.numInputRows:>12,} filas  "
-          f"({(p.durationMs or {}).get('triggerExecution', 0) / 1000:,.1f} s)")
-print(f"Filas ingeridas en esta corrida: {filas_ingesta:,}")
+# Evidencia desde el historial de Delta: una versión STREAMING UPDATE por micro-lote (un archivo
+# por lote). No depende de recentProgress, que en serverless puede venir vacío.
+lotes = (
+    spark.sql(f"DESCRIBE HISTORY {T_BRONZE}")
+    .filter((f.col("version") > v_antes) & (f.col("operation") == "STREAMING UPDATE"))
+    .select(
+        "version",
+        f.col("operationParameters.epochId").alias("lote"),
+        f.col("operationMetrics.numOutputRows").cast("long").alias("filas"),
+        "timestamp",
+    )
+    .orderBy("version")
+)
+lotes.show(truncate=False)
+filas_ingesta = lotes.agg(f.sum("filas")).first()[0] or 0
+print(f"Micro-lotes en esta corrida: {lotes.count()} · filas ingeridas: {filas_ingesta:,}")
+
+# Diagnóstico: ¿recentProgress trae datos en este entorno? (solo informativo)
+print(f"recentProgress reporta {sum((p.numInputRows or 0) for p in progreso):,} filas")
 
 # COMMAND ----------
 
@@ -168,16 +188,23 @@ print("Propiedades y comentarios aplicados.")
 # MAGIC
 # MAGIC ## Idempotencia del checkpoint
 # MAGIC
+# MAGIC # Evidencia
+# MAGIC
+# MAGIC ## Idempotencia del checkpoint
+# MAGIC
 # MAGIC Se lanza el mismo stream otra vez, de inmediato. Como el checkpoint ya registró todos los
-# MAGIC archivos, **debe ingerir 0 filas**. Esta verificación corre en cada ejecución del job: si
-# MAGIC alguna vez entrara algo, la tarea falla.
+# MAGIC archivos, **no debe escribir nada**: la versión de la tabla Delta tiene que ser la misma antes
+# MAGIC y después. Se compara la versión y no `recentProgress`, porque en serverless `recentProgress`
+# MAGIC puede llegar vacío y entonces "0 filas" se cumpliría siempre, aunque el checkpoint fallara.
+# MAGIC Esta verificación corre en cada ejecución del job: si alguna vez se escribiera algo, la tarea falla.
 
 # COMMAND ----------
 
-progreso_verificacion = correr_bronce("bronze_verificacion")
-filas_segunda = sum(p.numInputRows or 0 for p in progreso_verificacion)
-print(f"Segunda corrida inmediata: {filas_segunda:,} filas ingeridas")
-assert filas_segunda == 0, "El checkpoint volvió a ingerir archivos ya procesados"
+v_antes = version_actual(T_BRONZE)
+correr_bronce("bronze_verificacion")
+v_despues = version_actual(T_BRONZE)
+print(f"Versión de bronce antes: {v_antes} · después de la segunda corrida: {v_despues}")
+assert v_despues == v_antes, "La segunda corrida escribió en bronce: el checkpoint no evitó releer archivos"
 
 # COMMAND ----------
 
