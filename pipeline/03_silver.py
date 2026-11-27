@@ -91,6 +91,12 @@
 # MAGIC de Python del servidor, que no tiene acceso a `config.py`. Por eso dentro de ella solo se
 # MAGIC usan valores simples (nombres de tablas como texto) y módulos de PySpark, y la sesión se
 # MAGIC toma de `lote.sparkSession`.
+# MAGIC
+# MAGIC **Conciliación medida, no deducida.** Las métricas reclasifican bronce con las mismas reglas y
+# MAGIC cuentan llaves válidas y contenidos inválidos distintos; los duplicados salen de ahí, no de restar.
+# MAGIC `dif_plata` y `dif_cuarentena` comparan esos conteos contra las tablas: si el `MERGE` perdiera filas
+# MAGIC dejarían de ser 0. Durante un backfill pueden diferir mientras el stream no alcanza a bronce;
+# MAGIC el estado final, después del último lote, es el que se valida.
 
 # COMMAND ----------
 
@@ -328,16 +334,30 @@ CONDICION_MEJOR = (
     "< struct(t.n_no_disponibles, -t.n_completos, t.record_hash)"
 )
 
+def calcular_metricas(sesion, fechas, tierra):
+    """Estado completo de calidad para las fechas dadas (formato largo: fecha, metrica, valor).
 
-def calcular_metricas(sesion, fechas):
-    """Estado completo de calidad para las fechas dadas (formato largo: fecha, metrica, valor)."""
+    La conciliación se mide por dos caminos independientes: bronce reclasificado con las mismas
+    reglas (filas válidas, llaves válidas distintas, contenidos inválidos distintos) contra lo que
+    de verdad quedó en plata y en cuarentena. Si el MERGE perdiera o duplicara filas, dif_plata ≠ 0;
+    si la cuarentena perdiera filas, dif_cuarentena ≠ 0.
+    """
+    from datetime import timedelta  # import dentro: la función corre en el servidor
+
     en = lambda df, col: df.filter(f.col(col).isin(fechas))
     bronce = en(sesion.table(T_BRONZE).withColumn("fecha", fecha_de_archivo(f.col("_archivo"))), "fecha")
-    # Poda por la llave de clustering de plata (`fecha`): sin ella cada lote lee toda la tabla y el
-    # costo del backfill crece al cuadrado. El margen de ±1 día cubre filas cuya fecha no coincida
-    # con la del archivo (medido: 0; el chequeo de salud de oro lo vigila). El conteo sigue siendo
-    # por `_fecha_archivo`, así que el resultado no cambia.
-    from datetime import timedelta  # import dentro: la función corre en el servidor
+    clas = clasificar(bronce, tierra).withColumn("valida", f.size("motivos") == 0)
+    llave = f.struct(f.col("MMSI"), f.col("H3_Macro"), f.col("t_ts"))  # la llave de plata, ya tipada
+    medidas = clas.groupBy("fecha").agg(
+        f.count("*").alias("filas_recibidas"),
+        f.count("_rescued_data").alias("filas_esquema_rescatado"),
+        f.count(f.when(f.col("valida"), 1)).alias("filas_validas_bronce"),
+        f.count_distinct(f.when(f.col("valida"), llave)).alias("llaves_validas"),
+        f.count(f.when(~f.col("valida"), 1)).alias("filas_invalidas_bronce"),
+        f.count_distinct(f.when(~f.col("valida"), f.col("record_hash"))).alias("hashes_invalidos"),
+    )
+
+    # Poda por la llave de clustering de plata (`fecha`, ±1 día), igual que en la versión anterior.
     vecinas = sorted({d + timedelta(days=k) for d in fechas for k in (-1, 0, 1)})
     plata = (
         sesion.table(T_SILVER)
@@ -349,10 +369,6 @@ def calcular_metricas(sesion, fechas):
     largo = lambda df, cols: df.select(
         "fecha", f.explode(f.map_from_arrays(f.array(*[f.lit(c) for c in cols]), f.array(*[f.col(c) for c in cols]))).alias("metrica", "valor")
     )
-    recibidas = bronce.groupBy("fecha").agg(
-        f.count("*").alias("filas_recibidas"),
-        f.count("_rescued_data").alias("filas_esquema_rescatado"),  # cambio de esquema en la fuente
-    )
     banderas = ["sog_no_disponible", "sog_implausible", "cog_no_disponible", "heading_no_disponible", "vessel_type_desconocido"]
     en_plata = plata.groupBy(f.col("fecha_m").alias("fecha")).agg(
         f.count("*").alias("filas_silver"),
@@ -362,20 +378,24 @@ def calcular_metricas(sesion, fechas):
     en_cuar = cuar.groupBy(f.col("fecha_m").alias("fecha")).agg(f.count("*").alias("filas_cuarentena"))
 
     ancho = (
-        recibidas.join(en_plata, "fecha", "left").join(en_cuar, "fecha", "left").join(por_motivo, "fecha", "left")
+        medidas.join(en_plata, "fecha", "left").join(en_cuar, "fecha", "left").join(por_motivo, "fecha", "left")
         .fillna(0)
     )
     for m in MOTIVOS:
         ancho = ancho.withColumnRenamed(m, f"cuarentena_{m}")
-    ancho = ancho.withColumn(
-        "duplicados_descartados", f.col("filas_recibidas") - f.col("filas_silver") - f.col("filas_cuarentena")
+    ancho = (
+        ancho
+        .withColumn("duplicados_validos", f.col("filas_validas_bronce") - f.col("llaves_validas"))
+        .withColumn("duplicados_cuarentena", f.col("filas_invalidas_bronce") - f.col("hashes_invalidos"))
+        .withColumn("duplicados_descartados", f.col("duplicados_validos") + f.col("duplicados_cuarentena"))
+        .withColumn("dif_plata", f.col("llaves_validas") - f.col("filas_silver"))
+        .withColumn("dif_cuarentena", f.col("hashes_invalidos") - f.col("filas_cuarentena"))
     )
     metricas = [c for c in ancho.columns if c != "fecha"]
     return (
         largo(ancho.select("fecha", *[f.col(c).cast("bigint") for c in metricas]), metricas)
         .withColumn("_calculado_ts", f.current_timestamp())
     )
-
 
 def procesar_lote(lote, batch_id):
     from delta.tables import DeltaTable  # import dentro: la función corre en el servidor
@@ -421,7 +441,7 @@ def procesar_lote(lote, batch_id):
     if fechas_archivo:
         lista = ", ".join(f"DATE'{d}'" for d in fechas_archivo)
         (
-            calcular_metricas(sesion, fechas_archivo).write.format("delta").mode("overwrite")
+            calcular_metricas(sesion, fechas_archivo, tierra).write.format("delta").mode("overwrite")
             .option("replaceWhere", f"fecha IN ({lista})")
             .saveAsTable(T_METRICAS)
         )
@@ -472,15 +492,27 @@ for p in lotes:
 # MAGIC %md
 # MAGIC # Evidencia
 # MAGIC
+# MAGIC
 # MAGIC ## Idempotencia del checkpoint
 # MAGIC
-# MAGIC Igual que en bronce: lanzar el stream otra vez de inmediato debe procesar 0 filas.
+# MAGIC Igual que en bronce: lanzar el stream otra vez de inmediato no debe escribir nada. Se compara la
+# MAGIC versión Delta de plata, cuarentena y métricas antes y después, en lugar de `recentProgress`, que en
+# MAGIC serverless puede llegar vacío.
 
 # COMMAND ----------
 
-segunda = correr_silver("silver_verificacion")
-print(f"Segunda corrida inmediata: {sum(p.numInputRows for p in segunda):,} filas")
-assert not segunda, "El checkpoint de plata volvió a procesar versiones de bronce ya leídas"
+def version_actual(tabla: str) -> int:
+    """Última versión de la tabla Delta."""
+    return spark.sql(f"DESCRIBE HISTORY {tabla} LIMIT 1").first().version
+
+
+tablas_plata = [T_SILVER, T_CUARENTENA, T_METRICAS]
+antes = {t: version_actual(t) for t in tablas_plata}
+correr_silver("silver_verificacion")
+despues = {t: version_actual(t) for t in tablas_plata}
+for t in tablas_plata:
+    print(f"{t}: versión {antes[t]} → {despues[t]}")
+assert antes == despues, "La segunda corrida de plata escribió: el checkpoint volvió a procesar versiones de bronce"
 
 # COMMAND ----------
 
@@ -583,3 +615,40 @@ if fechas_iny:  # solo si se entregó algún archivo de inyectados
     .orderBy("version")
     .show(truncate=False)
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Conciliación medida
+# MAGIC
+# MAGIC Dos caminos independientes deben coincidir. Por fecha: `dif_plata` (llaves válidas distintas en
+# MAGIC bronce − filas en plata) y `dif_cuarentena` (contenidos inválidos distintos en bronce − filas en
+# MAGIC cuarentena) deben ser 0. Global, sin depender de la fecha del archivo: las llaves válidas
+# MAGIC distintas de todo bronce deben ser igual a las filas de plata. Antes, los duplicados se obtenían
+# MAGIC restando y el balance cuadraba por construcción; ahora una fila perdida en el `MERGE` lo rompe.
+
+# COMMAND ----------
+
+conc = (
+    spark.table(T_METRICAS)
+    .groupBy("fecha").pivot("metrica", [
+        "filas_recibidas", "filas_silver", "filas_cuarentena",
+        "duplicados_validos", "duplicados_cuarentena", "dif_plata", "dif_cuarentena",
+    ]).agg(f.first("valor"))
+    .orderBy("fecha")
+)
+conc.show(truncate=False)
+
+# Global: reclasifica todo bronce con las mismas reglas y compara contra las tablas.
+tierra = spark.table(T_TIERRA).select(f.col("h3_celda").alias("H3_Micro"), f.lit(True).alias("_en_tierra"))
+clas_total = clasificar(spark.table(T_BRONZE), tierra)
+llaves_bronce = clas_total.filter(f.size("motivos") == 0).select("MMSI", "H3_Macro", "t_ts").distinct().count()
+hashes_bronce = clas_total.filter(f.size("motivos") > 0).select("record_hash").distinct().count()
+filas_plata, filas_cuar = spark.table(T_SILVER).count(), spark.table(T_CUARENTENA).count()
+print(f"Global · llaves válidas distintas en bronce {llaves_bronce:,} · filas en plata {filas_plata:,}")
+print(f"Global · contenidos inválidos distintos en bronce {hashes_bronce:,} · filas en cuarentena {filas_cuar:,}")
+
+fechas_con_dif = conc.filter((f.col("dif_plata") != 0) | (f.col("dif_cuarentena") != 0)).count()
+assert llaves_bronce == filas_plata and hashes_bronce == filas_cuar, "La conciliación global no cuadra"
+assert fechas_con_dif == 0, "Hay fechas con dif_plata o dif_cuarentena distinta de 0"
+print("Concilia: cada fila de bronce quedó en plata, en cuarentena o contada como duplicado medido.")
