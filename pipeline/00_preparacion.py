@@ -475,6 +475,7 @@ else:
 # MAGIC tierra_firme = candidata
 # MAGIC              − costa (k_costa)              celdas candidatas con alguna vecina (a k anillos) que no es candidata
 # MAGIC              − puertos (k_puertos)          celdas a k anillos o menos de un puerto del WPI
+# MAGIC               − transitadas                  celdas con 5+ MMSI distintos (semilla calibrada)
 # MAGIC ```
 # MAGIC
 # MAGIC - **Por qué restar ríos:** el AIS de EE. UU. incluye tráfico fluvial real (remolcadores y
@@ -501,6 +502,13 @@ else:
 # MAGIC   y se documenta como **limitación conocida** (incluye algo de tráfico real en canales que
 # MAGIC   la escala 1:10m no resuelve); no se pierde, queda en la cuarentena con su motivo. No se
 # MAGIC   usó una costa más precisa (OSM, NOAA, USGS) por costo de descarga y procesamiento.
+# MAGIC
+# MAGIC   - **Por qué restar las celdas transitadas:** con costa k=3 y puertos k=8 quedaba un 1,25 % de
+# MAGIC   posiciones "en tierra", concentrado en canales y dársenas reales. Una celda por la que pasan 5
+# MAGIC   o más buques distintos no es tierra firme. Se calibró con 12 días (2023-06-01 a 06-12): 222
+# MAGIC   celdas, con mediana de 82 buques y máximo de 338. Se guarda como semilla versionada, y no se
+# MAGIC   recalcula en cada corrida, para que la máscara sea idéntica en cualquier workspace y no cambie
+# MAGIC   al entrar datos nuevos (la conciliación global de plata depende de eso).
 # MAGIC
 # MAGIC   **Resultado tras reconstruir** (la franja de 3 anillos se mide contra cualquier agua: mar,
 # MAGIC   lago o río): máscara de 2 099 026 celdas (antes 3 207 452) y **109 897 filas "en tierra"
@@ -543,6 +551,11 @@ for capa, (_, url) in config.CAPAS_NATURAL_EARTH.items():
         errores_fuentes.append(str(e))
         print(f"ERROR Natural Earth {capa} (la máscara no se construye en esta corrida): {e}")
 
+# Celdas transitadas: semilla versionada (99_utilidades, "Calibración de la máscara").
+with open(config.SEMILLA_CELDAS_TRANSITADAS, "rb") as fh:
+    snap_transitadas = registrar_snapshot("semillas/h3_celdas_transitadas", fh.read(), "csv")
+print(f"semilla celdas transitadas: {'NUEVO' if snap_transitadas.nuevo else 'sin cambios'} -> {snap_transitadas.ruta}")
+
 # La máscara usa los puertos (zona portuaria): sin WPI construido en esta corrida no se reconstruye.
 MASCARA_DISPONIBLE = len(snaps_ne) == len(config.CAPAS_NATURAL_EARTH) and snap_wpi is not None
 
@@ -555,6 +568,8 @@ if MASCARA_DISPONIBLE:
         "k_rios": config.MASCARA_K_RIOS,
         "k_costa": config.MASCARA_K_COSTA,
         "k_puertos": config.MASCARA_K_PUERTOS,
+        "transitadas": snap_transitadas.sha256,
+        "min_buques": config.MASCARA_MIN_BUQUES,
         "mosaico": TAMANO_MOSAICO_GRADOS,
     }
     VERSION_MASCARA = hashlib.sha256(
@@ -703,10 +718,15 @@ if RECONSTRUIR_MASCARA:
         .distinct()
     )
 
+    transitadas = (
+        spark.read.option("header", True).csv(snap_transitadas.ruta)
+        .select(f.col("h3_celda").cast("bigint").alias("celda"))
+    )
     df_tierra_firme = (
         candidata
         .join(costa, on="celda", how="left_anti")
         .join(zona_portuaria, on="celda", how="left_anti")
+        .join(transitadas, on="celda", how="left_anti")
         .select(f.col("celda").alias("h3_celda"), f.lit(VERSION_MASCARA).alias("_version_fuente"))
     )
     df_tierra_firme.write.mode("overwrite").saveAsTable(T_TIERRA)
@@ -814,3 +834,6 @@ errores = [f"Fuente: {e}" for e in errores_fuentes] + [f"Permisos: {e}" for e in
 if errores:
     raise RuntimeError("Preparación incompleta:\n- " + "\n- ".join(errores))
 print("Estructura, permisos y dimensiones de referencia al día.")
+
+# COMMAND ----------
+

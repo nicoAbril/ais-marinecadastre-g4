@@ -126,6 +126,14 @@ MASCARA_K_RIOS = 1         # anillos de celdas vecinas que se le dan de margen a
 MASCARA_K_COSTA = 3        # franja tolerada junto a cualquier agua (~3,5 km): muelles, dársenas, costa gruesa
 MASCARA_K_PUERTOS = 8      # radio alrededor de cada puerto del WPI considerado navegable (~10 km)
 
+
+# Celdas transitadas: una celda H3 res 7 por la que pasan MASCARA_MIN_BUQUES o más MMSI distintos no
+# es tierra firme (canales, dársenas y ríos que Natural Earth 1:10m no dibuja). Se calibra una vez
+# y se congela como semilla versionada, para que la máscara sea reproducible en cualquier workspace
+# y no cambie sola al entrar datos (99_utilidades, celda "Calibración de la máscara").
+MASCARA_MIN_BUQUES = 5
+SEMILLA_CELDAS_TRANSITADAS = "seeds/h3_celdas_transitadas.csv"  # relativa a pipeline/
+
 # ─── Oro (04_gold.py) ───
 # Trayectorias: reglas de corte de viaje de la Entrega 1
 VIAJE_MAX_SALTO_H3 = 2        # salto de más de 2 celdas H3 res 7 entre reportes consecutivos
