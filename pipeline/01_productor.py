@@ -219,6 +219,7 @@ def subir_si_no_existe(local: str, nombre: str) -> bool:
 # MAGIC | `INYECTADO_mmsi_nulo` | `MMSI` vacío | cuarentena |
 # MAGIC | `INYECTADO_timestamp_ilegible` | hora `25:61` | cuarentena |
 # MAGIC | `INYECTADO_timestamp_nulo` | `BaseDateTime` vacío | cuarentena |
+# MAGIC | `INYECTADO_sog_implausible` | `SOG = 75` | cuarentena (regla dura desde el paso 2; antes, regla suave) |
 # MAGIC | `CONTROL_sog_no_disponible` | `SOG = 102.3` | **plata** (regla suave: SOG a nulo, la fila sigue) |
 # MAGIC
 # MAGIC La última fila es un **control negativo**: comprueba que una anomalía suave *no* manda la fila
@@ -240,6 +241,7 @@ def escribir_inyectados(csv_real: str, d: date, destino: str) -> int:
         ("INYECTADO_mmsi_nulo", {"MMSI": ""}),
         ("INYECTADO_timestamp_ilegible", {"BaseDateTime": f"{d:%Y-%m-%d}T25:61:00"}),
         ("INYECTADO_timestamp_nulo", {"BaseDateTime": ""}),
+        ("INYECTADO_sog_implausible", {"SOG": "75.0"}),
         ("CONTROL_sog_no_disponible", {"SOG": "102.3"}),
     ]
     with open(destino, "w", newline="", encoding="utf-8") as fh:
