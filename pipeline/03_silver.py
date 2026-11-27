@@ -51,7 +51,8 @@
 # MAGIC | 2 | `mmsi_invalido` | nulo o distinto de 9 dígitos (*"identificadores bien formados"*) |
 # MAGIC | 3 | `coordenada_nula` | `LAT` o `LON` nulos o no numéricos |
 # MAGIC | 4 | `coordenada_fuera_de_rango` | `LAT ∉ [-90, 90]` o `LON ∉ [-180, 180]` |
-# MAGIC | 5 | `en_tierra` | `H3_Micro` en `dim_h3_tierra_firme` (*"en el agua"*) |
+# MAGIC | 5 | `sog_implausible` | `SOG > 60` o `< 0`, distinto de 102.3 (*"velocidades plausibles"*) |
+# MAGIC | 6 | `en_tierra` | `H3_Micro` en `dim_h3_tierra_firme` (*"en el agua"*) |
 # MAGIC
 # MAGIC `motivos` guarda **todas** las reglas que falla una fila; `motivo_principal` es la primera
 # MAGIC en este orden. Las reglas suaves no sacan la fila de plata: anulan el valor del sensor y
@@ -60,13 +61,17 @@
 # MAGIC | Bandera | Condición | Tratamiento |
 # MAGIC |---|---|---|
 # MAGIC | `sog_no_disponible` | `SOG = 102.3` (código AIS) | `SOG` → nulo |
-# MAGIC | `sog_implausible` | `SOG > 60` o `< 0` (*"velocidades plausibles"*) | `SOG` → nulo |
 # MAGIC | `cog_no_disponible` | `COG = 360` | `COG` → nulo |
 # MAGIC | `heading_no_disponible` | `Heading = 511` | `Heading` → nulo |
 # MAGIC | `vessel_type_desconocido` | código fuera de 0-99 | se conserva |
 # MAGIC
 # MAGIC La velocidad *implícita* (salto entre dos puntos) no se evalúa aquí: es una propiedad de la
 # MAGIC relación entre dos filas y depende de qué puntos hayan llegado; va en oro.
+# MAGIC
+# MAGIC **Por qué SOG > 60 nudos es regla dura y 102.3 no.** El enunciado pone "velocidades plausibles"
+# MAGIC entre las compuertas, y 60 nudos es el límite físico adoptado en la Entrega 1; la pérdida medida
+# MAGIC es mínima (83 filas el 2023-06-01). 102.3, en cambio, no es una velocidad imposible: es el
+# MAGIC código AIS de "sin dato". Por eso solo anula el valor y deja la bandera `sog_no_disponible`.
 # MAGIC
 # MAGIC **Deduplicación con ganador determinístico.** Para cada llave `(MMSI, H3_Macro,
 # MAGIC BaseDateTime)` gana la fila con menos campos "no disponible", luego la más completa
@@ -129,7 +134,8 @@ COLUMNAS_FUENTE = [
 ]
 # Reglas duras en orden de prioridad (el orden define motivo_principal).
 MOTIVOS = [
-    "timestamp_invalido", "mmsi_invalido", "coordenada_nula", "coordenada_fuera_de_rango", "en_tierra",
+    "timestamp_invalido", "mmsi_invalido", "coordenada_nula", "coordenada_fuera_de_rango",
+    "sog_implausible", "en_tierra",
 ]
 
 # Los timestamps AIS están en UTC y no traen zona: se fija la zona de la sesión para que
@@ -170,7 +176,7 @@ CREATE TABLE IF NOT EXISTS {T_SILVER} (
     H3_Micro                 BIGINT    NOT NULL COMMENT 'Celda H3 resolución 7 (~5 km²)',
     H3_Macro                 BIGINT    NOT NULL COMMENT 'Celda H3 resolución 3; parte de la llave (separa buques con el mismo MMSI en regiones distintas)',
     sog_no_disponible        BOOLEAN            COMMENT 'Regla suave: SOG = 102.3',
-    sog_implausible          BOOLEAN            COMMENT 'Regla suave: SOG > 60 o < 0',
+    
     cog_no_disponible        BOOLEAN            COMMENT 'Regla suave: COG = 360',
     heading_no_disponible    BOOLEAN            COMMENT 'Regla suave: Heading = 511',
     vessel_type_desconocido  BOOLEAN            COMMENT 'Regla suave: VesselType fuera de 0-99',
@@ -259,6 +265,7 @@ def clasificar(lote, tierra):
         "mmsi_invalido": f.col("MMSI").isNull() | ~f.col("MMSI").rlike(r"^[0-9]{9}$"),
         "coordenada_nula": f.col("t_lat").isNull() | f.col("t_lon").isNull(),
         "coordenada_fuera_de_rango": ~f.col("t_lat").between(-90, 90) | ~f.col("t_lon").between(-180, 180),
+        "sog_implausible": ((f.col("t_sog") > 60) & (f.col("t_sog") != 102.3)) | (f.col("t_sog") < 0),
         "en_tierra": f.coalesce(f.col("_en_tierra"), f.lit(False)),
     }
     motivos = f.array_compact(
@@ -270,10 +277,10 @@ def clasificar(lote, tierra):
 def a_silver(clasificado):
     """Filas válidas con el esquema de plata: reglas suaves aplicadas y columnas de desempate."""
     sog_nd = f.col("t_sog") == 102.3
-    sog_imp = (f.col("t_sog") > 60) & ~sog_nd | (f.col("t_sog") < 0)
+    #sog_imp = (f.col("t_sog") > 60) & ~sog_nd | (f.col("t_sog") < 0)
     cog_nd = f.col("t_cog") == 360
     hdg_nd = f.col("t_heading") == 511
-    no_disp = [sog_nd | sog_imp, cog_nd, hdg_nd]
+    no_disp = [sog_nd, cog_nd, hdg_nd]
     estaticos = ["VesselName", "IMO", "CallSign", "VesselType", "Length", "Width", "Draft"]
     return (
         clasificado.filter(f.size("motivos") == 0)
@@ -282,7 +289,7 @@ def a_silver(clasificado):
             f.col("t_ts").alias("BaseDateTime"),
             f.col("t_lat").alias("LAT"),
             f.col("t_lon").alias("LON"),
-            f.when(sog_nd | sog_imp, None).otherwise(f.col("t_sog")).alias("SOG"),
+            f.when(sog_nd, None).otherwise(f.col("t_sog")).alias("SOG"),
             f.when(cog_nd, None).otherwise(f.col("t_cog")).alias("COG"),
             f.when(hdg_nd, None).otherwise(f.col("t_heading")).alias("Heading"),
             "VesselName", "IMO", "CallSign",
@@ -296,7 +303,7 @@ def a_silver(clasificado):
             f.to_date("t_ts").alias("fecha"),
             "H3_Micro", "H3_Macro",
             f.coalesce(sog_nd, f.lit(False)).alias("sog_no_disponible"),
-            f.coalesce(sog_imp, f.lit(False)).alias("sog_implausible"),
+            #f.coalesce(sog_imp, f.lit(False)).alias("sog_implausible"),
             f.coalesce(cog_nd, f.lit(False)).alias("cog_no_disponible"),
             f.coalesce(hdg_nd, f.lit(False)).alias("heading_no_disponible"),
             (f.col("VesselType").isNotNull()
@@ -369,7 +376,7 @@ def calcular_metricas(sesion, fechas, tierra):
     largo = lambda df, cols: df.select(
         "fecha", f.explode(f.map_from_arrays(f.array(*[f.lit(c) for c in cols]), f.array(*[f.col(c) for c in cols]))).alias("metrica", "valor")
     )
-    banderas = ["sog_no_disponible", "sog_implausible", "cog_no_disponible", "heading_no_disponible", "vessel_type_desconocido"]
+    banderas = ["sog_no_disponible", "cog_no_disponible", "heading_no_disponible", "vessel_type_desconocido"]
     en_plata = plata.groupBy(f.col("fecha_m").alias("fecha")).agg(
         f.count("*").alias("filas_silver"),
         *[f.count(f.when(f.col(b), 1)).alias(f"bandera_{b}") for b in banderas],
@@ -548,6 +555,7 @@ esperado = {
     "INYECTADO_mmsi_nulo": "mmsi_invalido",
     "INYECTADO_timestamp_ilegible": "timestamp_invalido",
     "INYECTADO_timestamp_nulo": "timestamp_invalido",
+    "INYECTADO_sog_implausible": "sog_implausible",
 }
 filas_iny = (
     spark.table(T_CUARENTENA).filter(f.col("VesselName").startswith("INYECTADO_"))
