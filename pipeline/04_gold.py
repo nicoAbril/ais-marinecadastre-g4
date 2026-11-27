@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS {T_PUNTOS} (
     Trip_ID                 INT       NOT NULL COMMENT 'Viaje dentro de (MMSI_Real, fecha), desde 1',
     continua_de_fecha       DATE               COMMENT 'Solo en el primer punto del día: fecha del viaje del que es continuación',
     continua_de_trip        INT                COMMENT 'Solo en el primer punto del día: Trip_ID del viaje del que es continuación',
-    _version_silver         TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha'
+    _version_silver         TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha',
+    CONSTRAINT pk_trayectorias_puntos PRIMARY KEY (MMSI_Real, BaseDateTime)
 )
 CLUSTER BY (fecha, MMSI)
 COMMENT 'Posiciones de plata enriquecidas con el punto anterior del mismo buque, distancia, velocidad implícita y segmentación en viajes diarios.'
@@ -153,7 +154,8 @@ CREATE TABLE IF NOT EXISTS {T_DIARIAS} (
     lon_fin                     DOUBLE    NOT NULL COMMENT 'Longitud del último reporte',
     continua_de_fecha           DATE               COMMENT 'Si el viaje sigue de la víspera: fecha del viaje anterior',
     continua_de_trip            INT                COMMENT 'Si el viaje sigue de la víspera: Trip_ID del viaje anterior',
-    _version_silver             TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha'
+    _version_silver             TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha',
+    CONSTRAINT pk_trayectorias_diarias PRIMARY KEY (MMSI_Real, fecha, Trip_ID)
 )
 CLUSTER BY (fecha, MMSI)
 COMMENT 'Trayectorias diarias por buque: un viaje por fila. Un viaje de varios días se sigue por la cadena continua_de.'
@@ -168,7 +170,8 @@ CREATE TABLE IF NOT EXISTS {T_TRAFICO} (
     buques           BIGINT    NOT NULL COMMENT 'Buques distintos (MMSI) en la celda y hora',
     posiciones       BIGINT    NOT NULL COMMENT 'Reportes en la celda y hora',
     sog_promedio     DOUBLE             COMMENT 'Promedio del SOG reportado',
-    _version_silver  TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha'
+    _version_silver  TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha',
+    CONSTRAINT pk_trafico_celda_hora PRIMARY KEY (fecha, hora, h3_celda, categoria)
 )
 CLUSTER BY (fecha, h3_celda)
 COMMENT 'Matriz de tráfico por celda espacial (H3 res {config.RES_TRAFICO}), hora y categoría de buque. Base del mapa de intensidad.'
@@ -190,7 +193,8 @@ CREATE TABLE IF NOT EXISTS {T_PRESENCIA} (
     horas_en_puerto     DOUBLE    NOT NULL COMMENT 'Suma de intervalos ≤ 1 h entre reportes consecutivos de una visita',
     arribos             BIGINT    NOT NULL COMMENT 'Visitas nuevas cuya primera detención ocurre en el día (llegada efectiva)',
     presente_al_inicio  BOOLEAN   NOT NULL COMMENT 'La visita empezó sin reporte anterior del buque (ni ese día ni la víspera): ya estaba en puerto, no es arribo',
-    _version_silver     TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha'
+    _version_silver     TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha',
+    CONSTRAINT pk_presencia_puertos PRIMARY KEY (fecha, wpi_id, MMSI_Real)
 )
 CLUSTER BY (fecha, wpi_id)
 COMMENT 'Presencia diaria de buques en puertos. Visita = estancia en el área del puerto ({config.PUERTO_K_ANILLOS} anillos H3 res {config.PUERTO_RES_H3} alrededor del punto del WPI, puerto más cercano) con al menos un reporte detenido (Status fondeado/amarrado o SOG < {config.EN_PUERTO_SOG_MAX} nudo); salir y volver en menos de {config.PUERTO_REGRESO_MAX_H} h es la misma visita. Base de buques en puerto, ranking y arribos para ML.'
@@ -632,3 +636,27 @@ if rescatadas:
     print(f"AVISO: {rescatadas:,} filas con columnas fuera del esquema (_rescued_data). Revisar la fuente.")
 assert not malas, f"Chequeo de salud fallido en las fechas {[str(r.fecha) for r in malas]}"
 print(f"Chequeo de salud OK: {salud.count()} fecha(s).")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Linaje (gobernanza)
+# MAGIC
+# MAGIC Unity Catalog registra solo, en `system.access.table_lineage`, qué tabla se leyó para escribir
+# MAGIC cuál. No hace falta instrumentar nada. La tabla de sistema se actualiza con unos minutos de
+# MAGIC retraso; el mismo grafo se ve en Catalog Explorer → tabla → *Lineage*.
+
+# COMMAND ----------
+
+(
+    spark.table("system.access.table_lineage")
+    .filter(
+        (f.col("target_table_catalog") == CATALOGO)
+        & f.col("source_table_full_name").isNotNull()
+        & (f.col("source_table_full_name") != f.col("target_table_full_name"))
+    )
+    .groupBy(f.col("source_table_full_name").alias("origen"), f.col("target_table_full_name").alias("destino"))
+    .agg(f.max("event_time").alias("ultimo_evento"))
+    .orderBy("destino", "origen")
+    .show(50, truncate=False)
+)

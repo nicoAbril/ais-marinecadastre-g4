@@ -60,13 +60,26 @@ VOLUMES = {
 }
 
 
+# ─── Gobernanza: roles (grupos de la cuenta) y permisos (00_preparacion.py, A.3) ───
+# Permisos por esquema, no por tabla: en Unity Catalog se heredan a las tablas actuales y
+# futuras. Los grupos deben existir en la cuenta (los crea un administrador; el job no crea
+# identidades). Al migrar de workspace, se cambian los nombres de los grupos aquí.
+# Valor por rol: "catalogo" = todos los privilegios sobre el catálogo; o {esquema: privilegios}.
+ROLES = {
+    "ow_ingenieros": ("Equipo de datos que opera el pipeline", "catalogo"),
+    "ow_analistas": ("Tablero, ML y análisis de calidad: leen plata y oro",
+                     {"silver": ["USE SCHEMA", "SELECT"], "gold": ["USE SCHEMA", "SELECT", "EXECUTE"]}),
+    "ow_consumidores": ("Autoridades portuarias y navieras: solo el modelo del negocio",
+                        {"gold": ["USE SCHEMA", "SELECT"]}),
+}
+
 # ─── Productor del feed AIS (01_productor.py) ───
 URL_BASE_NOAA = "https://coast.noaa.gov/htdata/CMSP/AISDataHandler"
 
-# Reloj simulado: si el job no recibe `fecha`, entrega el día de datos que corresponde a "hoy":
-#   fecha_datos = DIA_CERO_DATOS + (hoy UTC − INICIO_SIMULACION)
-# Así cada día real entrega un día distinto de 2023, y correr el job dos veces el mismo día
-# entrega el mismo archivo (que ya existe → no se hace nada).
+# Reloj simulado: el parámetro `fecha` del job es la fecha del día (real) y se traduce a un día
+# de datos:  fecha_datos = DIA_CERO_DATOS + (fecha − INICIO_SIMULACION)
+# Así cada día real entrega un día distinto de 2023, y correr el job dos veces con la misma fecha
+# entrega el mismo archivo (que ya existe → no se hace nada). Ej.: 2026-11-19 → 2023-06-02.
 DIA_CERO_DATOS = "2023-06-08"      # primer día del feed (los días 1-7 entran como backfill)
 INICIO_SIMULACION = "2026-11-25"   # día real en que arrancó la simulación
 

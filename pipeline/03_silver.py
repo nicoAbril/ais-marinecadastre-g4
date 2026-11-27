@@ -173,7 +173,8 @@ CREATE TABLE IF NOT EXISTS {T_SILVER} (
     record_hash              STRING             COMMENT 'Desempate 3 (menor gana): sha256 del contenido original',
     _archivo                 STRING             COMMENT 'Archivo de origen de la fila ganadora',
     _fecha_archivo           DATE               COMMENT 'Fecha del archivo de origen (de su nombre)',
-    _ingesta_ts              TIMESTAMP          COMMENT 'Ingesta a bronce de la fila ganadora'
+    _ingesta_ts              TIMESTAMP          COMMENT 'Ingesta a bronce de la fila ganadora',
+    CONSTRAINT pk_ais_posiciones PRIMARY KEY (MMSI, H3_Macro, BaseDateTime)
 )
 CLUSTER BY (fecha, MMSI)
 COMMENT 'Posiciones AIS que pasaron las compuertas de calidad: una fila por (MMSI, H3_Macro, BaseDateTime), elegida con un orden total sobre el contenido. Única fuente de oro.'
@@ -332,7 +333,17 @@ def calcular_metricas(sesion, fechas):
     """Estado completo de calidad para las fechas dadas (formato largo: fecha, metrica, valor)."""
     en = lambda df, col: df.filter(f.col(col).isin(fechas))
     bronce = en(sesion.table(T_BRONZE).withColumn("fecha", fecha_de_archivo(f.col("_archivo"))), "fecha")
-    plata = en(sesion.table(T_SILVER), "_fecha_archivo").withColumnRenamed("_fecha_archivo", "fecha_m")
+    # Poda por la llave de clustering de plata (`fecha`): sin ella cada lote lee toda la tabla y el
+    # costo del backfill crece al cuadrado. El margen de ±1 día cubre filas cuya fecha no coincida
+    # con la del archivo (medido: 0; el chequeo de salud de oro lo vigila). El conteo sigue siendo
+    # por `_fecha_archivo`, así que el resultado no cambia.
+    from datetime import timedelta  # import dentro: la función corre en el servidor
+    vecinas = sorted({d + timedelta(days=k) for d in fechas for k in (-1, 0, 1)})
+    plata = (
+        sesion.table(T_SILVER)
+        .filter(f.col("fecha").isin(vecinas) & f.col("_fecha_archivo").isin(fechas))
+        .withColumnRenamed("_fecha_archivo", "fecha_m")
+    )
     cuar = en(sesion.table(T_CUARENTENA), "_fecha_archivo").withColumnRenamed("_fecha_archivo", "fecha_m")
 
     largo = lambda df, cols: df.select(
@@ -506,20 +517,32 @@ esperado = {
     "INYECTADO_timestamp_ilegible": "timestamp_invalido",
     "INYECTADO_timestamp_nulo": "timestamp_invalido",
 }
-obtenido = {
-    r.VesselName: r.motivo_principal
-    for r in spark.table(T_CUARENTENA).filter(f.col("VesselName").startswith("INYECTADO_"))
+filas_iny = (
+    spark.table(T_CUARENTENA).filter(f.col("VesselName").startswith("INYECTADO_"))
     .select("VesselName", "motivo_principal").collect()
-}
+)
+# Si un caso aparece en varias fechas con motivos distintos, `obtenido` lo marca como inconsistente.
+obtenido = {}
+for r in filas_iny:
+    obtenido[r.VesselName] = r.motivo_principal if obtenido.get(r.VesselName, r.motivo_principal) == r.motivo_principal else "INCONSISTENTE"
 for caso, motivo in esperado.items():
     marca = "OK " if obtenido.get(caso) == motivo else "FALLA"
     print(f"[{marca}] {caso:32s} esperado={motivo:27s} obtenido={obtenido.get(caso)}")
 
-control = spark.table(T_SILVER).filter(f.col("VesselName") == "CONTROL_sog_no_disponible").collect()
-ok_control = len(control) == 1 and control[0].SOG is None and control[0].sog_no_disponible
-print(f"[{'OK ' if ok_control else 'FALLA'}] CONTROL_sog_no_disponible en plata con SOG nulo y bandera")
+# Puede haber inyectadas de varias fechas: cada fila debe tener su motivo y cada control
+# (uno por fecha inyectada) debe quedar en plata con SOG nulo y su bandera.
+fechas_iny = [r._fecha_archivo for r in spark.table(T_CUARENTENA)
+              .filter(f.col("VesselName").startswith("INYECTADO_")).select("_fecha_archivo").distinct().collect()]
+control = (
+    spark.table(T_SILVER)
+    .filter(f.col("fecha").isin(fechas_iny) & (f.col("VesselName") == "CONTROL_sog_no_disponible"))
+    .collect()
+) if fechas_iny else []
+ok_control = len(control) == len(fechas_iny) and all(c.SOG is None and c.sog_no_disponible for c in control)
+print(f"[{'OK ' if ok_control else 'FALLA'}] CONTROL_sog_no_disponible en plata con SOG nulo y bandera "
+      f"({len(control)} de {len(fechas_iny)} fecha(s) inyectada(s))")
 
-if obtenido:  # solo si se entregó el archivo de inyectados
+if fechas_iny:  # solo si se entregó algún archivo de inyectados
     assert obtenido == esperado and ok_control, "Alguna fila inyectada no terminó donde debía"
 
 # COMMAND ----------

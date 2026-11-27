@@ -12,8 +12,7 @@
 # MAGIC ## Propósito
 # MAGIC
 # MAGIC Simular la llegada del "feed diario de archivos" del enunciado: deja en
-# MAGIC `landing/ais/entrantes/` el CSV de posiciones de un día (o de un rango, para backfill), tal
-# MAGIC como lo publica NOAA. Este notebook **es la fuente**, no parte del pipeline: el pipeline
+# MAGIC `landing/ais/entrantes/` el CSV de posiciones del día, tal como lo publica NOAA. Este notebook **es la fuente**, no parte del pipeline: el pipeline
 # MAGIC empieza en bronce, que lee lo que este deja.
 # MAGIC
 # MAGIC ## Entradas y salidas
@@ -30,8 +29,7 @@
 # MAGIC | Parámetro | Por defecto | Uso |
 # MAGIC |---|---|---|
 # MAGIC | `catalogo` | `oceanwatch_lakehouse` | Catálogo destino |
-# MAGIC | `fecha` | vacío → reloj simulado | Día a entregar (`YYYY-MM-DD`) |
-# MAGIC | `fecha_fin` | vacío | Si se da, entrega el rango `fecha … fecha_fin` (backfill) |
+# MAGIC | `fecha` | hoy (UTC) | **Fecha del día** (real, `YYYY-MM-DD`). En el job: `{{job.start_time.iso_date}}`; en un backfill, `{{backfill.iso_date}}` |
 # MAGIC | `reenviar` | `false` | Además entrega una copia del día con otro nombre (duplicados) |
 # MAGIC | `inyectar_invalidos` | `false` | Además entrega un archivo pequeño con una fila por motivo de cuarentena |
 # MAGIC
@@ -48,9 +46,12 @@
 # MAGIC - **Nombres inmutables = productor idempotente.** Si `AIS_YYYY_MM_DD.csv` ya está en
 # MAGIC   `entrantes/`, no se vuelve a subir. Correr el productor dos veces para el mismo día no
 # MAGIC   tiene efecto; un reintento del job tampoco.
-# MAGIC - **Reloj simulado.** Los datos son de 2023 y el job corre en 2026. Sin `fecha`, se entrega
-# MAGIC   `DIA_CERO_DATOS + (hoy − INICIO_SIMULACION)`: cada día real, un día distinto de datos; dos
-# MAGIC   corridas el mismo día real entregan el mismo archivo (y la segunda no hace nada).
+# MAGIC - **Reloj simulado.** Los datos son de 2023 y el job corre en 2026. El parámetro `fecha` es
+# MAGIC   la fecha del día (real) y se traduce a un día de datos:
+# MAGIC   `DIA_CERO_DATOS + (fecha − INICIO_SIMULACION)`. Cada día real entrega un día distinto de
+# MAGIC   datos; dos corridas con la misma fecha entregan el mismo archivo (la segunda no hace
+# MAGIC   nada). Un backfill de días reales pasados ("Run backfill" del job) entrega los días de datos
+# MAGIC   correspondientes, uno por corrida: 2026-11-19 → 2023-06-02.
 # MAGIC - **Anomalías en archivos aparte, nunca mezcladas con los datos reales.** Los duplicados
 # MAGIC   reales son ~0,003 % y no alcanzan para demostrar la deduplicación ni la cuarentena; por eso
 # MAGIC   se pueden inyectar, pero en archivos con nombre propio: bronce guarda el archivo de origen
@@ -60,6 +61,7 @@
 
 import csv
 import os
+import shutil
 import tempfile
 import time
 import zipfile
@@ -74,8 +76,7 @@ import config
 w = config.obtener_workspace()
 
 CATALOGO = config.leer_parametro("catalogo", config.CATALOGO_DEFECTO)
-FECHA = config.leer_parametro("fecha", "")
-FECHA_FIN = config.leer_parametro("fecha_fin", "")
+FECHA = config.leer_parametro("fecha", "")  # fecha del día (real); vacía = hoy UTC
 REENVIAR = config.leer_parametro("reenviar", "false").lower() == "true"
 INYECTAR_INVALIDOS = config.leer_parametro("inyectar_invalidos", "false").lower() == "true"
 
@@ -94,23 +95,15 @@ def a_fecha(texto: str) -> date:
     return datetime.strptime(texto, "%Y-%m-%d").date()
 
 
-def fecha_por_reloj_simulado() -> date:
-    hoy = datetime.now(timezone.utc).date()
-    dias = (hoy - a_fecha(config.INICIO_SIMULACION)).days
-    return a_fecha(config.DIA_CERO_DATOS) + timedelta(days=dias)
+def dia_de_datos(fecha_del_dia: date) -> date:
+    """Reloj simulado: día real → día de datos de 2023."""
+    transcurridos = (fecha_del_dia - a_fecha(config.INICIO_SIMULACION)).days
+    return a_fecha(config.DIA_CERO_DATOS) + timedelta(days=transcurridos)
 
 
-if FECHA:
-    inicio = a_fecha(FECHA)
-    fin = a_fecha(FECHA_FIN) if FECHA_FIN else inicio
-    origen = "parámetro"
-else:
-    inicio = fin = fecha_por_reloj_simulado()
-    origen = "reloj simulado"
-
-assert fin >= inicio, f"fecha_fin ({fin}) es anterior a fecha ({inicio})"
-dias = [inicio + timedelta(days=i) for i in range((fin - inicio).days + 1)]
-print(f"Días a entregar ({origen}): {dias[0]} … {dias[-1]} ({len(dias)} días)")
+fecha_del_dia = a_fecha(FECHA) if FECHA else datetime.now(timezone.utc).date()
+dias = [dia_de_datos(fecha_del_dia)]
+print(f"Fecha del día {fecha_del_dia} → datos del {dias[0]}")
 print(f"Reenviar: {REENVIAR} · Inyectar inválidos: {INYECTAR_INVALIDOS}")
 
 # COMMAND ----------
@@ -159,18 +152,33 @@ def descargar_noaa(d: date, destino: str, reintentos: int = 3) -> None:
             time.sleep(10 * intento)
 
 
+def subir(remoto: str, local: str, overwrite: bool) -> None:
+    """Sube un archivo local al Volume en una sola petición (el objeto aparece completo o no aparece).
+
+    Usa `files.upload`/`files.download`, presentes en todas las versiones del SDK: el entorno
+    serverless trae un SDK más viejo que el local, sin `upload_from`/`download_to`.
+    """
+    with open(local, "rb") as fh:
+        w.files.upload(remoto, fh, overwrite=overwrite)
+
+
+def bajar(remoto: str, local: str) -> None:
+    with open(local, "wb") as out:
+        shutil.copyfileobj(w.files.download(remoto).contents, out, 8 * 1024 * 1024)
+
+
 def obtener_zip(d: date, tmp: str) -> str:
     """Deja el zip del día en el disco local; lo toma de _descargas/ si ya existe, si no de NOAA."""
     nombre = f"AIS_{d:%Y_%m_%d}.zip"
     local, remoto = os.path.join(tmp, nombre), f"{RUTA_DESCARGAS}/{nombre}"
     if existe(remoto):
-        w.files.download_to(remoto, local)
+        bajar(remoto, local)
         if zip_ok(local):
             print(f"  zip desde _descargas/ ({os.path.getsize(local) / 1e6:,.0f} MB)")
             return local
         print("  zip en _descargas/ corrupto: se descarga de nuevo")
     descargar_noaa(d, local)
-    w.files.upload_from(remoto, local, overwrite=True)
+    subir(remoto, local, overwrite=True)
     print(f"  zip desde NOAA ({os.path.getsize(local) / 1e6:,.0f} MB), guardado en _descargas/")
     return local
 
@@ -188,7 +196,7 @@ def subir_si_no_existe(local: str, nombre: str) -> bool:
     if existe(remoto):
         print(f"  {nombre}: ya está en entrantes/, no se sube (idempotente)")
         return False
-    w.files.upload_from(remoto, local, overwrite=False)
+    subir(remoto, local, overwrite=False)
     print(f"  {nombre}: entregado ({os.path.getsize(local) / 1e6:,.0f} MB)")
     return True
 

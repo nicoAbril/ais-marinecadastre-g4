@@ -81,10 +81,102 @@ oceanwatch_lakehouse                     (catálogo; parámetro `catalogo`)
 └── ops       Volume checkpoints (estado de los streams y esquemas de Auto Loader)
 ```
 
+### Gobernanza
+
+**Permisos por rol** (grupos de la cuenta; definidos en `config.ROLES` y aplicados por
+`00_preparacion`, sección A.3). Se otorgan por esquema y se heredan a las tablas futuras.
+
+| Rol | Para quién | `landing` | `bronze` | `silver` | `gold` | `ops` |
+|---|---|---|---|---|---|---|
+| `ow_ingenieros` | Equipo que opera el pipeline | todo | todo | todo | todo | todo |
+| `ow_analistas` | Tablero, ML, análisis de calidad | — | — | lectura | lectura + modelos | — |
+| `ow_consumidores` | Autoridades portuarias y navieras | — | — | — | lectura | — |
+
+**Linaje:** lo registra Unity Catalog (`system.access.table_lineage`; Catalog Explorer →
+*Lineage*): `bronze.ais_posiciones_raw` → `silver.ais_posiciones` / `ais_cuarentena` /
+`calidad_metricas` → `gold.trayectorias_puntos` → demás tablas de oro → vista `visitas_puerto`.
+La evidencia está al final de `04_gold`.
+
+### Contrato de datos de la capa oro
+
+Garantías comunes a todas las tablas de oro:
+
+- **Solo datos que pasaron las compuertas:** oro se calcula únicamente desde `silver.ais_posiciones`.
+- **Frescura diaria:** cada corrida del job recalcula las fechas que cambiaron en plata y el día
+  siguiente. `_version_silver` dice con qué versión de plata se construyó cada fecha.
+- **Completitud verificada:** el chequeo de salud de `04_gold` exige posiciones de oro = filas de
+  plata en cada fecha; si no se cumple, la tarea falla.
+- **Esquema estable:** columnas con tipo, nulabilidad y comentario declarados en el `CREATE TABLE`.
+  La llave primaria es **informativa** (Unity Catalog no la valida); su unicidad la garantiza el
+  cálculo.
+- **Dueño:** `ow_ingenieros`. **Consumidores:** `ow_analistas` y `ow_consumidores` (lectura).
+
+| Tabla | Grano (llave primaria) | Contenido | Uso principal |
+|---|---|---|---|
+| `trayectorias_puntos` | `MMSI_Real`, `BaseDateTime` | Cada posición con el punto anterior, distancia, velocidad implícita, anomalía y viaje | Anomalías del día; base de las demás tablas |
+| `trayectorias_diarias` | `MMSI_Real`, `fecha`, `Trip_ID` | Un viaje por fila: inicio, fin, distancia, velocidades; `continua_de` si sigue de la víspera | Trayectorias diarias por buque |
+| `trafico_celda_hora` | `fecha`, `hora`, `h3_celda`, `categoria` | Buques, posiciones y SOG promedio por celda H3 res 5 | Mapa de intensidad de tráfico |
+| `presencia_puertos` | `fecha`, `wpi_id`, `MMSI_Real` | Buque de visita en un puerto en un día: posiciones, horas, arribos | Ranking de puertos, buques en puerto, ML de arribos |
+| `visitas_puerto` (vista) | `MMSI_Real`, `wpi_id`, `visita_n` | Visitas completas uniendo días | Duración de estancias |
+
+`MMSI_Real = MMSI + "_" + H3_Macro`: separa buques distintos que transmiten el mismo MMSI.
+
 ### Cómo ejecutar la Entrega 2
 
-- **En Databricks:** Git folder del repo, cómputo serverless, correr los notebooks de
-  `pipeline/` en orden (o el job, cuando esté definido).
+El pipeline es un **Lakeflow Job definido como código** (bundle): `databricks.yml` y
+[`resources/oceanwatch_pipeline.job.yml`](resources/oceanwatch_pipeline.job.yml). Desplegar crea o
+actualiza el job (nunca lo duplica); no lo ejecuta.
+
+```bash
+databricks bundle validate --target dev
+databricks bundle deploy --target dev                         # sube pipeline/ y crea/actualiza el job
+databricks bundle run oceanwatch_pipeline --target dev        # corrida con la fecha de hoy
+databricks bundle run oceanwatch_pipeline --target dev \
+  --params fecha=2026-11-19                                   # un día puntual (→ datos 2023-06-02)
+```
+
+```
+preparacion ─► productor ─► bronze ─► silver ─► gold
+```
+
+**Operación:**
+
+- **Parámetro `fecha` = la fecha del día** (real). Su valor por defecto es
+  `{{job.start_time.iso_date}}`: la corrida programada (06:00 Bogotá) la recibe sola. El
+  productor la traduce a un día de datos con el reloj simulado:
+  `DIA_CERO_DATOS + (fecha − INICIO_SIMULACION)` (en `config.py`). Correr dos veces con la misma
+  fecha no entrega nada nuevo.
+- **Backfill o recuperar un hueco:** en el job, *Run now ▾ → Run backfill* con el rango de días
+  reales. Databricks crea una corrida por día con `fecha = {{backfill.iso_date}}`, en serie
+  (`max_concurrent_runs = 1`). Ej.: 2026-11-19 … 2026-11-27 entrega los datos del 2023-06-02 al
+  2023-06-10.
+- **Demos:** `reenviar` / `inyectar_invalidos` (duplicados y cuarentena),
+  `reprocesar_desde_cero` (tolerancia a fallos: plata sin cambios), `recalcular_todo` (oro).
+  Son para corridas sueltas (*Run now with different parameters*). En un backfill se deja todo
+  por defecto: cualquier parámetro que se cambie ahí aplica a **todas** las corridas (con
+  `reprocesar_desde_cero` o `recalcular_todo`, cada corrida rehace todo lo anterior).
+
+**Fecha del día → día de datos entregado** (`INICIO_SIMULACION = 2026-11-25`,
+`DIA_CERO_DATOS = 2023-06-08`):
+
+| `fecha` (día real, ISO) | Archivo entregado | Cómo llegó |
+|---|---|---|
+| 2026-11-18 | `AIS_2023_06_01.csv` | Carga inicial de desarrollo (productor a mano, con reenvío e inyectadas) |
+| 2026-11-19 … 2026-11-24 | `AIS_2023_06_02.csv` … `AIS_2023_06_07.csv` | Backfill (*Run backfill*) |
+| 2026-11-25 | `AIS_2023_06_08.csv` | Backfill (día de inicio de la simulación) |
+| 2026-11-26 | `AIS_2023_06_09.csv` | Backfill |
+| 2026-11-27 | `AIS_2023_06_10.csv` | Backfill |
+| 2026-11-28 en adelante | un día más por cada día real | Corrida programada diaria |
+
+Regla general: `día de datos = 2023-06-08 + (fecha − 2026-11-25)`. Cada corrida del productor la
+imprime (`Fecha del día 2026-11-19 → datos del 2023-06-02`).
+- **Monitoreo:** historial de corridas del job, correo si falla y el chequeo de salud al final
+  de `04_gold`.
+
+**Desarrollo:**
+
+- **En Databricks:** Git folder del repo y serverless; los notebooks también se pueden correr
+  uno a uno (`03_silver` solo aquí, por `foreachBatch`).
 - **En local:** `uv sync`, kernel del `.venv` en VS Code y la extensión de Databricks conectada
   con el perfil `uniandes`. `config.obtener_spark()` usa Databricks Connect (el cómputo corre en
   el workspace) y `config.obtener_workspace()` la Files API para leer y escribir en Volumes.

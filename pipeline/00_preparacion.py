@@ -27,6 +27,7 @@
 # MAGIC | **Entrada** | `pipeline/seeds/world_port_index.csv` | Respaldo del WPI, solo si la NGA no responde y no hay snapshot |
 # MAGIC | **Salida** | Catálogo `oceanwatch_lakehouse` (parámetro `catalogo`) | Esquemas `landing`, `bronze`, `silver`, `gold`, `ops` |
 # MAGIC | **Salida** | Volumes `landing.ais`, `landing.referencias`, `ops.checkpoints` | Con su estructura de carpetas |
+# MAGIC | **Salida** | Permisos de Unity Catalog | Un rol (grupo de la cuenta) por tipo de usuario, por esquema |
 # MAGIC | **Salida** | `silver.dim_tipo_buque` | Código AIS → descripción y categoría |
 # MAGIC | **Salida** | `silver.dim_puertos` | Puertos del mundo con coordenadas |
 # MAGIC | **Salida** | `silver.dim_h3_tierra_firme` | Máscara de celdas H3 de tierra firme |
@@ -38,6 +39,7 @@
 # MAGIC - **Parte A · Estructura de Unity Catalog**
 # MAGIC   - A.1 Catálogo y esquemas
 # MAGIC   - A.2 Volumes y carpetas
+# MAGIC   - A.3 Permisos por rol
 # MAGIC - **Parte B · Fuentes de referencia**
 # MAGIC   - B.1 Patrón de snapshot (utilidades)
 # MAGIC   - B.2 Contratos de las dimensiones
@@ -137,6 +139,43 @@ for (capa, nombre), (comentario, subcarpetas) in config.VOLUMES.items():
     for sub in subcarpetas:
         w.files.create_directory(f"{cfg.volume(capa, nombre)}/{sub}")
     print(f"OK volume {nombre_uc}  ->  {subcarpetas}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## A.3 Permisos por rol
+# MAGIC
+# MAGIC Cada rol accede a la capa que necesita y nada más (roles y privilegios en `config.ROLES`):
+# MAGIC
+# MAGIC | Rol (grupo) | `landing` | `bronze` | `silver` | `gold` | `ops` |
+# MAGIC |---|---|---|---|---|---|
+# MAGIC | `ow_ingenieros` | todo | todo | todo | todo | todo |
+# MAGIC | `ow_analistas` | — | — | lectura | lectura + modelos | — |
+# MAGIC | `ow_consumidores` | — | — | — | lectura | — |
+# MAGIC
+# MAGIC - **Por esquema, no por tabla:** los privilegios se heredan a las tablas que existen y a las
+# MAGIC   que se creen después (oro, modelos de ML), sin volver a tocar los permisos.
+# MAGIC - **Los grupos son de la cuenta** (Unity Catalog no reconoce grupos locales del workspace) y
+# MAGIC   los crea un administrador; el job no crea identidades. Si un grupo no existe, la tarea
+# MAGIC   falla al final con el nombre del grupo: sin roles no hay gobernanza.
+# MAGIC - `GRANT` es idempotente: repetirlo no cambia nada. Solo agrega: quitar un privilegio de
+# MAGIC   `config.ROLES` no lo revoca (se hace con `REVOKE` a mano, deliberadamente).
+
+# COMMAND ----------
+
+errores_permisos: list[str] = []
+for grupo, (descripcion, alcance) in config.ROLES.items():
+    try:
+        if alcance == "catalogo":
+            spark.sql(f"GRANT ALL PRIVILEGES ON CATALOG {cfg.catalogo} TO `{grupo}`")
+        else:
+            spark.sql(f"GRANT USE CATALOG ON CATALOG {cfg.catalogo} TO `{grupo}`")
+            for capa, privilegios in alcance.items():
+                spark.sql(f"GRANT {', '.join(privilegios)} ON SCHEMA {cfg.esquema(capa)} TO `{grupo}`")
+        print(f"OK {grupo}: {descripcion}")
+    except Exception as e:
+        errores_permisos.append(f"{grupo}: {str(e).splitlines()[0][:200]}")
+        print(f"FALLA {grupo}: {errores_permisos[-1]}")
 
 # COMMAND ----------
 
@@ -691,6 +730,25 @@ for (capa, nombre), (_, subcarpetas) in config.VOLUMES.items():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Permisos efectivos por rol
+
+# COMMAND ----------
+
+roles = list(config.ROLES)
+permisos = spark.sql(f"SHOW GRANTS ON CATALOG {cfg.catalogo}")
+for capa in config.ESQUEMAS:
+    permisos = permisos.unionByName(spark.sql(f"SHOW GRANTS ON SCHEMA {cfg.esquema(capa)}"))
+(
+    permisos.filter(f.col("Principal").isin(roles))
+    .groupBy("Principal", "ObjectType", "ObjectKey")
+    .agg(f.concat_ws(", ", f.sort_array(f.collect_set("ActionType"))).alias("privilegios"))
+    .orderBy("Principal", "ObjectType", "ObjectKey")
+    .show(truncate=False)
+)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Puntos de control de la máscara
 # MAGIC
 # MAGIC Pruebas de humo. Las dos primeras son **asserts** (si fallan, la máscara está mal y la
@@ -738,12 +796,13 @@ if MASCARA_DISPONIBLE:
 # MAGIC %md
 # MAGIC ## Resultado de la tarea
 # MAGIC
-# MAGIC Si alguna fuente no pudo construirse (y no había snapshot previo), la tarea falla aquí: el
-# MAGIC job la marca como fallida y aplica sus reintentos, pero lo que sí se pudo actualizar ya
-# MAGIC quedó escrito.
+# MAGIC Si alguna fuente no pudo construirse (y no había snapshot previo) o falta algún grupo de los
+# MAGIC roles, la tarea falla aquí: el job la marca como fallida y aplica sus reintentos, pero lo que
+# MAGIC sí se pudo actualizar ya quedó escrito.
 
 # COMMAND ----------
 
-if errores_fuentes:
-    raise RuntimeError("Fuentes de referencia sin construir:\n- " + "\n- ".join(errores_fuentes))
-print("Estructura y dimensiones de referencia al día.")
+errores = [f"Fuente: {e}" for e in errores_fuentes] + [f"Permisos: {e}" for e in errores_permisos]
+if errores:
+    raise RuntimeError("Preparación incompleta:\n- " + "\n- ".join(errores))
+print("Estructura, permisos y dimensiones de referencia al día.")

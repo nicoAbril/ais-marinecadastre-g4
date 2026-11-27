@@ -1,19 +1,32 @@
-# This is a Declarative Automation Bundle definition for ais-marinecadastre-g4.
-# The Databricks extension requires databricks.yml configuration file.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Bundle de la Entrega 2: el job de Lakeflow del pipeline OceanWatch, definido como código.
+# `databricks bundle deploy` crea o actualiza el job (nunca lo duplica); no lo ejecuta.
+# Docs: https://docs.databricks.com/dev-tools/bundles/index.html
 
 bundle:
   name: ais-marinecadastre-g4
 
+include:
+  - resources/*.yml
+
+# Se sube al workspace lo que está en git (respeta .gitignore), menos los notebooks de la
+# Entrega 1, que el job no usa.
+sync:
+  exclude:
+    - notebooks/**
+
+variables:
+  catalogo:
+    description: Catálogo de Unity Catalog donde vive el lakehouse (parámetro `catalogo` de todas las tareas)
+    default: oceanwatch_lakehouse
+
 targets:
+  # Workspace de la Entrega 1. Sin `mode: development`: ese modo fuerza la pausa de los horarios
+  # y el requisito 3 pide demostrar la ejecución programada.
   dev:
-    mode: development
     default: true
     workspace:
       host: https://dbc-b1de8d0d-7bd3.cloud.databricks.com
+      profile: uniandes
 
-  ## Optionally, there could be 'staging' or 'prod' targets here.
-  #
-  # prod:
-  #   workspace:
-  #     host: https://dbc-b1de8d0d-7bd3.cloud.databricks.com
+  # Pendiente: target `institucional` (otro host y, si aplica, otro catálogo) cuando se aclaren
+  # los recursos del workspace del curso.

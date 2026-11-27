@@ -67,13 +67,26 @@ está en la sección *Decisiones* de cada notebook.
 - **`foreachBatch` + `MERGE` por llave**: `03_silver.py`, llave `(MMSI, H3_Macro,
   BaseDateTime)` con ganador determinístico (menos campos "no disponible" → más completo →
   hash). Resultado igual sin importar orden o repeticiones (modelo unificado).
+- **Destino idempotente al perder el checkpoint (tolerancia a fallos)**: con
+  `reprocesar_desde_cero = true`, plata releyó las 17 617 817 filas de bronce y el `MERGE`
+  (versión 5 de la tabla) dejó 0 insertadas y 0 actualizadas; oro recalculó el día con cifras
+  idénticas.
 - **Compuertas y cuarentena con causa**: reglas duras con prioridad (`motivo_principal`) y
   reglas suaves que anulan el valor y dejan bandera; métricas por fecha en `calidad_metricas`.
 
 ## Semana 12 — Orquestación
 
 - **Volume de Unity Catalog como zona de llegadas**: `00_preparacion.py`, `01_productor.py`.
-- **Lakeflow Job**: pendiente.
+- **Lakeflow Job** definido como código en un bundle (`resources/oceanwatch_pipeline.job.yml`):
+  - Tareas en cadena `preparacion → productor → bronze → silver → gold` (`preparacion` crea los
+    Volumes que usa el productor; en paralelo, la primera corrida en un workspace nuevo fallaría).
+  - Parámetro `fecha` = la fecha del día (`{{job.start_time.iso_date}}`), que el productor traduce
+    a un día de 2023. Backfill nativo (*Run backfill*): una corrida por día con
+    `{{backfill.iso_date}}`.
+  - Horario diario 06:00 (Bogotá) activo. El target del bundle no usa `mode: development`:
+    ese modo fuerza la pausa de los horarios (`cannot set trigger pause status to UNPAUSED`).
+  - Reintentos según la causa probable de falla (red: más y más espaciados), una sola corrida a
+    la vez (los checkpoints no se comparten) y correo al fallar.
 
 ## Decisiones y hallazgos
 
@@ -86,6 +99,10 @@ está en la sección *Decisiones* de cada notebook.
   zona portuaria de 8 quedó en 1,25 %.
 - **World Port Index caído (HTTP 503)**: semilla de respaldo en el repo con el CSV de la Entrega 1.
 - **Modo ANSI**: `try_cast` en vez de `cast` (el WPI trae `'7950.0'` en un campo entero).
+- **SDK distinto en local y en el job**: la primera corrida del job falló en el productor con
+  `'FilesAPI' object has no attribute 'upload_from'`. El `.venv` local tiene databricks-sdk 0.140;
+  el entorno serverless del job trae uno más viejo. Se usa `files.upload`/`files.download`, que
+  existen en todas las versiones.
 - **`foreachBatch` no corre desde Databricks Connect** (`exec format error` del sandbox): plata se
   ejecuta dentro de Databricks; el resto también corre en local.
 - **Oro batch incremental**: plata recibe `MERGE` y no admite lectura en stream. Oro recalcula
@@ -95,6 +112,23 @@ está en la sección *Decisiones* de cada notebook.
   1 nudo (33 182 arribos en un día, 172 de un solo buque). La Entrega 1 tenía el mismo defecto
   (máximo 209). Nueva regla: estancia en el área + al menos un reporte detenido + salir y volver
   en < 1 h es la misma visita → 5 526 arribos, máximo 10 (ferris). Se quitaron los zarpes.
+- **Recomendaciones del query profile durante el backfill**: (1) *"Add a WHERE clause on
+  clustering key"*: las métricas de cada lote leían toda plata (filtraban por `_fecha_archivo`,
+  que no es llave de clustering); el costo del backfill crecía al cuadrado. Se agregó la poda por
+  `fecha` (±1 día); métricas idénticas a las guardadas (30 de 30). (2) *"Apply key constraints"*
+  para quitar el agrupamiento de la evidencia de unicidad: descartada; una llave primaria con
+  `RELY` no se valida en Databricks y haría que la evidencia dejara de verificar.
+- **Gobernanza**: tres roles (`ow_ingenieros`, `ow_analistas`, `ow_consumidores`) con permisos
+  por esquema, heredados a tablas futuras. Un grupo creado con la API del workspace quedó como
+  `WorkspaceGroup` y Unity Catalog respondió `PRINCIPAL_DOES_NOT_EXIST`: los roles tienen que ser
+  grupos de la cuenta (creados desde *Settings → Groups → Add group to account and workspace*).
+  Llaves primarias informativas (sin `RELY`) en plata y oro como contrato del grano; el linaje lo
+  registra Unity Catalog solo.
+- **Backfill nativo, 2023-06-02 … 2023-06-10** (*Run backfill* del 2026-11-19 al 2026-11-27):
+  9 corridas en serie, todas OK, 5–8 min cada una. En los 10 días, oro = plata por fecha; ~8,5 M
+  filas válidas por día, 0 filas con esquema rescatado, ~200–300 duplicados reales por día; unos
+  14 500 viajes por día siguen de la víspera (los que cruzan la medianoche); 4 900–6 000 arribos
+  por día, máximo 11 por buque y puerto.
 - **Plata, 2023-06-01**: 17 617 817 recibidas = 8 691 916 plata + 116 814 cuarentena + 8 809 087
   duplicados (el reenvío completo). Las 8 filas inyectadas cayeron cada una en su motivo.
 - **Alcance**: sin alertas con watermark ni tabla de auditoría; el monitoreo es el job más un
