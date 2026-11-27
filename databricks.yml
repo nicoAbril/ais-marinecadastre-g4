@@ -18,15 +18,25 @@ variables:
   catalogo:
     description: Catálogo de Unity Catalog donde vive el lakehouse (parámetro `catalogo` de todas las tareas)
     default: oceanwatch_lakehouse
+  aplicar_permisos:
+    description: "false en workspaces sin grupos de cuenta (Free Edition): 00_preparacion omite los GRANT"
+    default: "true"
 
-targets:
-  # Workspace de la Entrega 1. Sin `mode: development`: ese modo fuerza la pausa de los horarios
-  # y el requisito 3 pide demostrar la ejecución programada.
-  dev:
-    default: true
-    workspace:
-      host: https://dbc-b1de8d0d-7bd3.cloud.databricks.com
-      profile: uniandes
+  # Free Edition de Edgar: integración de los puntos 3 y 4. Catálogo aparte porque
+  # `oceanwatch_lakehouse` ya existe allí con otra versión; sin grupos de cuenta; horario en pausa
+  
+edgar_free:
+  workspace:
+    host: https://PEGA-AQUI-TU-URL.cloud.databricks.com
+  variables:
+    catalogo: oceanwatch_dev
+    aplicar_permisos: "false"
+  resources:
+    jobs:
+      oceanwatch_pipeline:
+        schedule:
+          pause_status: PAUSED
+
 
   # Pendiente: target `institucional` (otro host y, si aplica, otro catálogo) cuando se aclaren
   # los recursos del workspace del curso.

@@ -30,6 +30,8 @@ resources:
       parameters:
         - name: catalogo
           default: ${var.catalogo}
+        - name: aplicar_permisos
+          default: ${var.aplicar_permisos}
         # La fecha del día. En un backfill, Databricks la reemplaza por {{backfill.iso_date}}.
         - name: fecha
           default: "{{job.start_time.iso_date}}"
