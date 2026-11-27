@@ -2,20 +2,10 @@
   "datasets": [
     {
       "name": "65d4654c",
-      "displayName": "ds_mapa",
+      "displayName": "Intensidad de tráfico por celda (trafico_celda_dia)",
       "queryLines": [
-        "SELECT\r\n",
-        "  h3,\r\n",
-        "  ROUND(AVG(lat_centro), 5)  AS lat,\r\n",
-        "  ROUND(AVG(lon_centro), 5)  AS lon,\r\n",
-        "  SUM(posiciones)            AS posiciones,\r\n",
-        "  MAX(buques)                AS buques_hora_pico,\r\n",
-        "  ROUND(AVG(sog_medio_nudos), 1) AS sog_medio,\r\n",
-        "    ROUND(LOG10(SUM(posiciones)), 2) AS intensidad\r\n",
-        "FROM oceanwatch_lakehouse.gold.trafico_celda_hora\r\n",
-        "WHERE fecha = :fecha\r\n",
-        "GROUP BY h3\r\n",
-        "HAVING SUM(posiciones) >= 20"
+        "SELECT h3_celda, lat, lon, buques, posiciones, intensidad ",
+        "FROM trafico_celda_dia WHERE fecha = :fecha AND posiciones >= 20 "
       ],
       "parameters": [
         {
@@ -27,7 +17,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -37,15 +27,10 @@
     },
     {
       "name": "d11407ad",
-      "displayName": "ds_trafico_hora",
+      "displayName": "Buques por hora (trafico_hora)",
       "queryLines": [
-        "SELECT hora,\r\n",
-        "       SUM(posiciones) AS posiciones,\r\n",
-        "       SUM(buques)     AS buques_hora\r\n",
-        "FROM oceanwatch_lakehouse.gold.trafico_celda_hora\r\n",
-        "WHERE fecha = :fecha\r\n",
-        "GROUP BY hora\r\n",
-        "ORDER BY hora"
+        "SELECT hora, SUM(buques) AS buques_hora, SUM(posiciones) AS posiciones ",
+        "FROM trafico_hora WHERE fecha = :fecha GROUP BY hora ORDER BY hora "
       ],
       "parameters": [
         {
@@ -57,7 +42,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -67,20 +52,10 @@
     },
     {
       "name": "ab42c5fd",
-      "displayName": "ds_ranking_puertos",
+      "displayName": "Ranking de puertos (puerto_dia)",
       "queryLines": [
-        "SELECT\r\n",
-        "  nombre_puerto,\r\n",
-        "  pais,\r\n",
-        "  COUNT(*)                                        AS visitas,\r\n",
-        "  SUM(CAST(se_detuvo AS INT))                     AS se_detuvieron,\r\n",
-        "  COUNT(*) - SUM(CAST(se_detuvo AS INT))          AS pasaron_de_largo,\r\n",
-        "  ROUND(AVG(duracion_horas), 1)                   AS duracion_media_h\r\n",
-        "FROM oceanwatch_lakehouse.gold.visitas_puerto\r\n",
-        "WHERE Fecha_Entrada = :fecha\r\n",
-        "GROUP BY nombre_puerto, pais\r\n",
-        "ORDER BY visitas DESC\r\n",
-        "LIMIT 20"
+        "SELECT nombre_puerto, pais, arribos, buques_presentes, ROUND(horas_promedio, 1) AS horas_promedio ",
+        "FROM puerto_dia WHERE fecha = :fecha ORDER BY arribos DESC LIMIT 15 "
       ],
       "parameters": [
         {
@@ -92,7 +67,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -102,25 +77,12 @@
     },
     {
       "name": "392edcde",
-      "displayName": "ds_buques_en_puerto",
+      "displayName": "Buques en puerto (buques_en_puerto_dia)",
       "queryLines": [
-        "SELECT\r\n",
-        "  nombre_puerto,\r\n",
-        "  pais,\r\n",
-        "  MMSI,\r\n",
-        "  VesselName,\r\n",
-        "  Descripcion_Tipo,\r\n",
-        "  entrada_ts,\r\n",
-        "  salida_ts,\r\n",
-        "  duracion_horas,\r\n",
-        "  se_detuvo,\r\n",
-        "  es_vigente,\r\n",
-        "  entrada_censurada\r\n",
-        "FROM oceanwatch_lakehouse.gold.visitas_puerto\r\n",
-        "WHERE entrada_ts < date_add(:fecha, 1)\r\n",
-        "  AND (salida_ts IS NULL OR salida_ts >= :fecha)\r\n",
-        "  AND duracion_horas >= :horas_minimas\r\n",
-        "ORDER BY nombre_puerto, entrada_ts"
+        "SELECT nombre_puerto, nombre_buque, categoria, primera_ts, ultima_ts, ",
+        "ROUND(horas_en_puerto, 1) AS horas_en_puerto, arribos ",
+        "FROM buques_en_puerto_dia WHERE fecha = :fecha AND horas_en_puerto >= :horas_minimas ",
+        "ORDER BY nombre_puerto, primera_ts "
       ],
       "parameters": [
         {
@@ -132,7 +94,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -157,11 +119,11 @@
     },
     {
       "name": "59f66b43",
-      "displayName": "ds_anomalias",
+      "displayName": "Anomalías del día (anomalias_buque_dia)",
       "queryLines": [
-        "SELECT tipo, MMSI, VesselName, ts, LAT, LON, valor, detalle\r\n",
-        "FROM oceanwatch_lakehouse.gold.anomalias_dia\r\n",
-        "WHERE fecha = :fecha"
+        "SELECT tipo, MMSI, nombre_buque, eventos, ROUND(valor_max, 1) AS valor_max, ",
+        "ultima_lat AS lat, ultima_lon AS lon, ultimo_detalle AS detalle ",
+        "FROM anomalias_buque_dia WHERE fecha = :fecha AND ultima_lat IS NOT NULL "
       ],
       "parameters": [
         {
@@ -173,7 +135,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -183,13 +145,10 @@
     },
     {
       "name": "d549dd2e",
-      "displayName": "ds_resumen",
+      "displayName": "Resumen del día (kpi_dia)",
       "queryLines": [
-        "SELECT\r\n",
-        "  (SELECT COUNT(*) FROM oceanwatch_lakehouse.gold.trayectorias_diarias WHERE fecha = :fecha)       AS buques_activos,\r\n",
-        "  (SELECT ROUND(SUM(distancia_nm)) FROM oceanwatch_lakehouse.gold.trayectorias_diarias WHERE fecha = :fecha) AS millas_navegadas,\r\n",
-        "  (SELECT COUNT(*) FROM oceanwatch_lakehouse.gold.visitas_puerto WHERE Fecha_Entrada = :fecha)     AS entradas_a_puerto,\r\n",
-        "  (SELECT COUNT(DISTINCT MMSI) FROM oceanwatch_lakehouse.gold.anomalias_dia WHERE fecha = :fecha) AS buques_con_anomalias"
+        "SELECT buques_activos, arribos, millas, buques_con_anomalias, buques_en_puerto, pct_cuarentena ",
+        "FROM kpi_dia WHERE fecha = :fecha "
       ],
       "parameters": [
         {
@@ -201,7 +160,7 @@
               "dataType": "DATE",
               "values": [
                 {
-                  "value": "2023-06-12T00:00:00.000"
+                  "value": "2023-06-10T00:00:00.000"
                 }
               ]
             }
@@ -446,8 +405,8 @@
                   "datasetName": "d549dd2e",
                   "fields": [
                     {
-                      "name": "sum(entradas_a_puerto)",
-                      "expression": "SUM(`entradas_a_puerto`)"
+                      "name": "sum(arribos)",
+                      "expression": "SUM(`arribos`)"
                     }
                   ],
                   "disaggregated": false
@@ -458,7 +417,7 @@
               "frame": {
                 "showTitle": true,
                 "title": {
-                  "value": "Entradas a Puerto",
+                  "value": "Arribos a puerto",
                   "fields": []
                 }
               },
@@ -466,7 +425,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(entradas_a_puerto)"
+                  "fieldName": "sum(arribos)"
                 }
               },
               "data": {
@@ -491,8 +450,8 @@
                   "datasetName": "d549dd2e",
                   "fields": [
                     {
-                      "name": "sum(millas_navegadas)",
-                      "expression": "SUM(`millas_navegadas`)"
+                      "name": "sum(millas)",
+                      "expression": "SUM(`millas`)"
                     }
                   ],
                   "disaggregated": false
@@ -511,7 +470,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(millas_navegadas)"
+                  "fieldName": "sum(millas)"
                 }
               },
               "data": {
@@ -593,8 +552,8 @@
                       "expression": "`lon`"
                     },
                     {
-                      "name": "buques_hora_pico",
-                      "expression": "`buques_hora_pico`"
+                      "name": "buques",
+                      "expression": "`buques`"
                     }
                   ],
                   "disaggregated": true
@@ -637,7 +596,7 @@
                 },
                 "extra": [
                   {
-                    "fieldName": "buques_hora_pico"
+                    "fieldName": "buques"
                   }
                 ]
               },
@@ -725,12 +684,8 @@
                       "expression": "`nombre_puerto`"
                     },
                     {
-                      "name": "sum(se_detuvieron)",
-                      "expression": "SUM(`se_detuvieron`)"
-                    },
-                    {
-                      "name": "sum(pasaron_de_largo)",
-                      "expression": "SUM(`pasaron_de_largo`)"
+                      "name": "sum(arribos)",
+                      "expression": "SUM(`arribos`)"
                     }
                   ],
                   "disaggregated": false
@@ -744,25 +699,30 @@
                 "x": {
                   "fieldName": "nombre_puerto",
                   "scale": {
-                    "type": "categorical"
-                  }
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  },
+                  "displayName": "Puerto"
                 },
                 "y": {
-                  "fields": [
-                    {
-                      "fieldName": "sum(se_detuvieron)"
-                    },
-                    {
-                      "fieldName": "sum(pasaron_de_largo)"
-                    }
-                  ],
+                  "fieldName": "sum(arribos)",
                   "scale": {
                     "type": "quantitative"
-                  }
+                  },
+                  "displayName": "Arribos"
                 }
               },
               "data": {
                 "queryName": "main_query"
+              },
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Ranking de puertos por arribos (top 15)",
+                  "fields": []
+                }
               }
             }
           },
@@ -787,33 +747,33 @@
                       "expression": "`nombre_puerto`"
                     },
                     {
-                      "name": "VesselName",
-                      "expression": "`VesselName`"
+                      "name": "nombre_buque",
+                      "expression": "`nombre_buque`"
                     },
                     {
-                      "name": "Descripcion_Tipo",
-                      "expression": "`Descripcion_Tipo`"
+                      "name": "categoria",
+                      "expression": "`categoria`"
                     },
                     {
-                      "name": "entrada_ts",
-                      "expression": "`entrada_ts`"
+                      "name": "primera_ts",
+                      "expression": "`primera_ts`"
                     },
                     {
-                      "name": "salida_ts",
-                      "expression": "`salida_ts`"
+                      "name": "ultima_ts",
+                      "expression": "`ultima_ts`"
                     },
                     {
-                      "name": "duracion_horas",
-                      "expression": "`duracion_horas`"
+                      "name": "horas_en_puerto",
+                      "expression": "`horas_en_puerto`"
                     },
                     {
-                      "name": "se_detuvo",
-                      "expression": "`se_detuvo`"
+                      "name": "arribos",
+                      "expression": "`arribos`"
                     }
                   ],
                   "filters": [
                     {
-                      "expression": "IN_RANGE(`duracion_horas`, NULL, NULL)"
+                      "expression": "IN_RANGE(`horas_en_puerto`, NULL, NULL)"
                     },
                     {
                       "expression": "`nombre_puerto` IN (`nombre_puerto`) OR TRUE"
@@ -845,22 +805,22 @@
                     "fieldName": "nombre_puerto"
                   },
                   {
-                    "fieldName": "VesselName"
+                    "fieldName": "nombre_buque"
                   },
                   {
-                    "fieldName": "Descripcion_Tipo"
+                    "fieldName": "categoria"
                   },
                   {
-                    "fieldName": "entrada_ts"
+                    "fieldName": "primera_ts"
                   },
                   {
-                    "fieldName": "salida_ts"
+                    "fieldName": "ultima_ts"
                   },
                   {
-                    "fieldName": "duracion_horas"
+                    "fieldName": "horas_en_puerto"
                   },
                   {
-                    "fieldName": "se_detuvo"
+                    "fieldName": "arribos"
                   }
                 ],
                 "rowOrder": [
@@ -894,20 +854,24 @@
                   "datasetName": "59f66b43",
                   "fields": [
                     {
-                      "name": "LAT",
-                      "expression": "`LAT`"
+                      "name": "lat",
+                      "expression": "`lat`"
                     },
                     {
-                      "name": "LON",
-                      "expression": "`LON`"
+                      "name": "lon",
+                      "expression": "`lon`"
                     },
                     {
                       "name": "detalle",
                       "expression": "`detalle`"
                     },
                     {
-                      "name": "VesselName",
-                      "expression": "`VesselName`"
+                      "name": "nombre_buque",
+                      "expression": "`nombre_buque`"
+                    },
+                    {
+                      "name": "tipo",
+                      "expression": "`tipo`"
                     }
                   ],
                   "disaggregated": true
@@ -927,10 +891,10 @@
               "encodings": {
                 "coordinates": {
                   "latitude": {
-                    "fieldName": "LAT"
+                    "fieldName": "lat"
                   },
                   "longitude": {
-                    "fieldName": "LON"
+                    "fieldName": "lon"
                   }
                 },
                 "extra": [
@@ -938,9 +902,16 @@
                     "fieldName": "detalle"
                   },
                   {
-                    "fieldName": "VesselName"
+                    "fieldName": "nombre_buque"
                   }
-                ]
+                ],
+                "color": {
+                  "fieldName": "tipo",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Tipo"
+                }
               },
               "data": {
                 "queryName": "main_query"

@@ -18,6 +18,10 @@ variables:
   catalogo:
     description: Catálogo de Unity Catalog donde vive el lakehouse (parámetro `catalogo` de todas las tareas)
     default: oceanwatch_lakehouse
+  warehouse_id:
+    description: SQL warehouse que ejecuta las consultas del tablero
+    lookup:
+      warehouse: Serverless Starter Warehouse
   aplicar_permisos:
     description: "false en workspaces sin grupos de cuenta (Free Edition): 00_preparacion omite los GRANT"
     default: "true"

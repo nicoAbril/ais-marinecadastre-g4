@@ -1,0 +1,12 @@
+# Consola de visualización (requisito 4): tablero AI/BI sobre las tablas de servicio de oro (04e).
+# Las consultas del JSON usan nombres de tabla sin catálogo ni esquema; aquí se fijan con
+# dataset_catalog / dataset_schema, así que el mismo tablero sirve en cualquier target.
+
+resources:
+  dashboards:
+    oceanwatch_consola:
+      display_name: "OceanWatch · Tráfico marítimo"
+      file_path: "../Dashboards/Tráfico Marítimo OceanWatch.lvdash.json"
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalogo}
+      dataset_schema: gold

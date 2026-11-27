@@ -163,6 +163,25 @@ ANOM_CLON_DISTANCIA_MIN_NM = 50.0  # mismo MMSI, dos MMSI_Real en el mismo minut
 # Provisional: se confirma con la celda de medición (celdas por resolución).
 RES_MAPA = 6
 
+# ─── ML (05_ml.py): detección de anomalías de velocidad por viaje ───
+# IsolationForest (no supervisado) sobre gold.trayectorias_diarias. Se entrena solo si no hay
+# modelo @champion o con el parámetro `reentrenar`; cada corrida puntúa las fechas pendientes.
+ML_MODELO = "modelo_anomalias_velocidad"   # en el esquema gold: <catalogo>.gold.<ML_MODELO>
+ML_EXPERIMENTO = "oceanwatch_anomalias_velocidad"   # en /Users/<usuario>/
+ML_CARACTERISTICAS = [
+    "velocidad_implicita_max_kn",  # salto más rápido entre dos reportes del viaje
+    "velocidad_media_kn",          # distancia / duración del viaje
+    "sog_promedio",                # velocidad reportada por el propio buque
+    "distancia_nm",
+    "duracion_h",
+    "puntos",
+]
+ML_MIN_PUNTOS = 5            # viajes con menos reportes no tienen velocidades confiables
+ML_CONTAMINACION = 0.02      # fracción esperada de viajes anómalos
+ML_ARBOLES = 200
+ML_SEMILLA = 42
+ML_MAX_ENTRENAMIENTO = 300_000  # viajes; si hay más, muestra determinística por hash
+
 # Histéresis de visitas: salir del área y volver al mismo puerto en menos de esto es la misma
 # visita. Con "detenido en el área" como estado, la velocidad oscilando alrededor de 1 nudo
 # generaba 33 182 "arribos" el 2023-06-01 (172 de un mismo buque); con estancia en el área +
