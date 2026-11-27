@@ -24,9 +24,9 @@ entregas:
                                           └──────── compuertas ───► 03_silver ──► silver ─┬─► cuarentena
                                                                             │              └─► métricas de calidad
                                                                             ▼
-                                                    04_gold ──► gold (recalculado) + alertas (watermark)
+                                                    04_gold ──► gold (recalculado) + chequeo de salud
                                                                             │
-                                                    05_auditoria · 06_ml ◄──┘
+                                                                   05_ml ◄──┘
 ```
 
 ### Índice de notebooks
@@ -39,10 +39,9 @@ Cada notebook es una tarea del job y sigue la misma estructura: *Propósito → 
 | 0 | [`00_preparacion`](pipeline/00_preparacion.py) | Estructura + referencias | WPI, Natural Earth, semilla | catálogo, esquemas, Volumes, `silver.dim_*` | corrido OK (2026-11-25) |
 | 1 | [`01_productor`](pipeline/01_productor.py) | Simulador del feed (param. `fecha`) | NOAA | `landing/ais/entrantes` | corrido OK (2026-11-25) |
 | 2 | [`02_bronze`](pipeline/02_bronze.py) | Bronce | `landing/ais/entrantes` | `bronze.ais_posiciones_raw` | corrido OK (2026-11-25) |
-| 3 | [`03_silver`](pipeline/03_silver.py) | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | escrito (se ejecuta en Databricks) |
-| 4 | [`04_gold`](pipeline/04_gold.py) | Oro (batch incremental) + alertas | `silver` | `gold` | escrito, sin alertas (corre en local) |
-| 5 | `05_auditoria` | Auditoría del job | todas | `ops` | pendiente |
-| 6 | `06_ml` | ML con MLflow | `gold` | experimento + modelo en UC | pendiente |
+| 3 | [`03_silver`](pipeline/03_silver.py) | Plata (compuertas) | `bronze`, `silver.dim_*` | `silver` + cuarentena + métricas | ejecutado 2023-06-01 (corre en Databricks: `foreachBatch`) |
+| 4 | [`04_gold`](pipeline/04_gold.py) | Oro (batch incremental) + chequeo de salud | `silver` | `gold` | ejecutado 2023-06-01 (corre también en local) |
+| 5 | `05_ml` | ML con MLflow | `gold` | experimento + modelo en UC | pendiente |
 
 Configuración compartida (nombres, rutas, fuentes, parámetros): [`pipeline/config.py`](pipeline/config.py).
 
@@ -60,9 +59,12 @@ Configuración compartida (nombres, rutas, fuentes, parámetros): [`pipeline/con
 4. **Sobrescribir solo es seguro con estados completos** (dimensiones de referencia, días de
    oro recalculados desde plata); con incrementos, `MERGE` por llave.
 5. **Bronce absorbe cambios de esquema sin perder datos** (strings + `_rescued_data`); plata
-   tiene un contrato fijo; un cambio de esquema genera alerta, no rompe el flujo.
-6. **Camino exacto y camino rápido.** Oro se recalcula (completo, corrige tardíos); las alertas
-   usan ventanas con watermark (oportunas, con estado acotado).
+   tiene un contrato fijo; un cambio de esquema queda medido (`filas_esquema_rescatado` en las
+   métricas de calidad) y se reporta, no rompe el flujo.
+6. **Los datos tardíos se corrigen recalculando, no con watermark.** Un evento tardío entra a
+   plata por `MERGE` y oro recalcula su fecha. Así el resultado es exacto aunque los datos
+   lleguen tarde; el enunciado no pide alertas en tiempo real (las "anomalías del día" salen de
+   oro).
 7. **PySpark como lenguaje base**, igual que en la Entrega 1: toda transformación usa la API de
    DataFrame (`pyspark.sql.functions as f`; las funciones H3 y espaciales nativas de Databricks
    vía `pyspark.databricks.sql.functions as dbf`). `spark.sql` solo para DDL y metadatos de
@@ -76,7 +78,7 @@ oceanwatch_lakehouse                     (catálogo; parámetro `catalogo`)
 ├── bronze    crudo inmutable
 ├── silver    datos validados · cuarentena · métricas · dim_tipo_buque · dim_puertos · dim_h3_tierra_firme
 ├── gold      modelo de negocio
-└── ops       Volume checkpoints · auditoría de ejecuciones
+└── ops       Volume checkpoints (estado de los streams y esquemas de Auto Loader)
 ```
 
 ### Cómo ejecutar la Entrega 2
