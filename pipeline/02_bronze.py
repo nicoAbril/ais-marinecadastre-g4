@@ -42,8 +42,8 @@
 # MAGIC   explícito y con esquema inferido. Un reordenamiento en la fuente no desalinea los datos.
 # MAGIC - **Cambios de esquema: modo `rescue`.** Una columna nueva en la fuente no detiene el stream
 # MAGIC   ni se pierde: su valor queda en `_rescued_data` (JSON con nombre y valor). Una columna que
-# MAGIC   desaparece queda nula. La alerta la da la auditoría (filas con `_rescued_data`), sin parar
-# MAGIC   la ingesta. Se descartó `addNewColumns` porque detiene el stream a propósito ante cada
+# MAGIC   desaparece queda nula. Plata cuenta esas filas por fecha (`filas_esquema_rescatado` en
+# MAGIC   `calidad_metricas`) y el chequeo de salud de oro lo reporta, sin parar la ingesta. Se descartó `addNewColumns` porque detiene el stream a propósito ante cada
 # MAGIC   columna nueva y depende de un reintento: contradice "un cambio de esquema genera alerta,
 # MAGIC   no rompe el flujo".
 # MAGIC - **Un archivo por micro-lote** (`maxFilesPerTrigger = 1`): cada lote del historial
@@ -185,7 +185,7 @@ assert filas_segunda == 0, "El checkpoint volvió a ingerir archivos ya procesad
 # MAGIC ## Contenido de bronce por archivo
 # MAGIC
 # MAGIC Una fila por archivo procesado. `filas_rescued` > 0 indicaría que la fuente envió columnas
-# MAGIC fuera del esquema (es la métrica que la auditoría convierte en alerta).
+# MAGIC fuera del esquema (plata la registra como `filas_esquema_rescatado`).
 
 # COMMAND ----------
 

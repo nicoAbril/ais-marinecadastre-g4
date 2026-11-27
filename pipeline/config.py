@@ -33,8 +33,7 @@ ESQUEMAS = {
     "gold": "Capa oro: modelo del negocio recalculado desde plata (trayectorias diarias, "
             "presencia en puertos, tráfico por celda y hora). Solo contiene registros que "
             "pasaron las compuertas.",
-    "ops": "Operación del pipeline: checkpoints de Structured Streaming, esquemas de Auto Loader "
-           "y log de ejecuciones (monitoreo).",
+    "ops": "Operación del pipeline: checkpoints de Structured Streaming y esquemas de Auto Loader.",
 }
 
 # ─── Volumes: (esquema, volume) -> (comentario, subcarpetas a crear) ───
@@ -53,10 +52,10 @@ VOLUMES = {
         ["wpi", "natural_earth", "semillas"],
     ),
     ("ops", "checkpoints"): (
-        "Estado de Structured Streaming: un checkpoint por query (bronze, silver, gold) y los "
+        "Estado de Structured Streaming: un checkpoint por query (bronze, silver) y los "
         "esquemas inferidos/declarados de Auto Loader. Borrar un checkpoint obliga a reprocesar "
         "desde cero; el pipeline está diseñado para que eso sea idempotente.",
-        ["bronze", "silver", "gold", "autoloader_schemas"],
+        ["bronze", "silver", "autoloader_schemas"],
     ),
 }
 
@@ -108,7 +107,7 @@ REGIONES_AIS = {
 }
 MASCARA_RESOLUCION_H3 = 7  # = H3_Micro de silver (~5 km² por celda)
 MASCARA_K_RIOS = 1         # anillos de celdas vecinas que se le dan de margen a cada río
-# Calibrados con el día 2023-06-01 (ver BITACORA.md): con k_costa=1 y sin zona portuaria, el
+# Calibrados con el día 2023-06-01 (tabla completa en 00_preparacion): con k_costa=1 y sin zona portuaria, el
 # 11,4 % de las posiciones caía "en tierra" (puertos y canales que la escala 1:10m no dibuja);
 # con k_costa=3 y k_puertos=8 baja a 1,25 % (109 897 filas, 484 buques).
 MASCARA_K_COSTA = 3        # franja tolerada junto a cualquier agua (~3,5 km): muelles, dársenas, costa gruesa
@@ -120,16 +119,23 @@ VIAJE_MAX_SALTO_H3 = 2        # salto de más de 2 celdas H3 res 7 entre reporte
 VIAJE_MAX_SILENCIO_H = 12     # más de 12 h sin reportar
 VELOCIDAD_MAX_KN = 60         # velocidad implícita físicamente imposible para un buque
 # Tráfico por celda y hora: H3 res 5 (~250 km²). Medido el 2023-06-01: 10 288 celdas, 70 876
-# filas celda×hora (res 7 serían 371 365); se ve bien en un mapa nacional.
+# combinaciones celda×hora (res 7 serían 371 365); se ve bien en un mapa nacional. La tabla además
+# separa por categoría de buque: 122 348 filas celda×hora×categoría ese día.
 RES_TRAFICO = 5
 # Presencia en puertos: área = anillo de 5 celdas H3 res 8 (~4 km) alrededor del punto del WPI
-# (como en la Entrega 1). "En puerto" = en el área y (Status fondeado/amarrado o SOG < 1 nudo).
+# (como en la Entrega 1). "Detenido" = Status fondeado/amarrado o SOG < 1 nudo; una estancia en
+# el área con al menos un reporte detenido es una visita.
 # Medido el 2023-06-01 frente a la regla de la Entrega 1 (Status 1/5 o nulo): falsos positivos
 # navegando a ≥ 5 nudos 77 384 → 14 701; suma 1,3 M posiciones de buques detenidos con otro Status.
 PUERTO_RES_H3 = 8
 PUERTO_K_ANILLOS = 5
 EN_PUERTO_STATUS = (1, 5)
 EN_PUERTO_SOG_MAX = 1.0
+# Histéresis de visitas: salir del área y volver al mismo puerto en menos de esto es la misma
+# visita. Con "detenido en el área" como estado, la velocidad oscilando alrededor de 1 nudo
+# generaba 33 182 "arribos" el 2023-06-01 (172 de un mismo buque); con estancia en el área +
+# detención + esta histéresis quedan ~5 500 (máximo 10 por buque y puerto: ferris).
+PUERTO_REGRESO_MAX_H = 1.0
 
 
 def en_databricks() -> bool:

@@ -41,7 +41,9 @@
 # MAGIC %md
 # MAGIC ## Decisiones
 # MAGIC
-# MAGIC **Compuertas.** Medidas sobre el 2023-06-01 antes de fijarlas (detalle en `BITACORA.md`).
+# MAGIC **Compuertas.** Medidas sobre el 2023-06-01 (8 808 904 filas) antes de fijarlas: MMSI distinto
+# MAGIC de 9 dígitos 6 911; timestamps y coordenadas inválidas 0; `SOG = 102.3` 21 946; `SOG > 60` 83;
+# MAGIC `COG = 360` 1 490 036 (16,9 %); `Heading = 511` 4 871 561 (55,3 %); VesselType desconocido 765.
 # MAGIC
 # MAGIC | Prioridad | Regla dura → cuarentena | Condición |
 # MAGIC |---|---|---|
@@ -336,7 +338,10 @@ def calcular_metricas(sesion, fechas):
     largo = lambda df, cols: df.select(
         "fecha", f.explode(f.map_from_arrays(f.array(*[f.lit(c) for c in cols]), f.array(*[f.col(c) for c in cols]))).alias("metrica", "valor")
     )
-    recibidas = bronce.groupBy("fecha").agg(f.count("*").alias("filas_recibidas"))
+    recibidas = bronce.groupBy("fecha").agg(
+        f.count("*").alias("filas_recibidas"),
+        f.count("_rescued_data").alias("filas_esquema_rescatado"),  # cambio de esquema en la fuente
+    )
     banderas = ["sog_no_disponible", "sog_implausible", "cog_no_disponible", "heading_no_disponible", "vessel_type_desconocido"]
     en_plata = plata.groupBy(f.col("fecha_m").alias("fecha")).agg(
         f.count("*").alias("filas_silver"),

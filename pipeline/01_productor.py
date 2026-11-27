@@ -38,9 +38,8 @@
 # MAGIC ## Decisiones
 # MAGIC
 # MAGIC - **Un archivo completo por día**, igual que el parcial y que la fuente: el CSV de NOAA
-# MAGIC   entra intacto. La tolerancia a datos tardíos (watermark) se trabaja sobre un campo del
-# MAGIC   contenido, `BaseDateTime`, así que no hace falta partir archivos: basta con entregar un día
-# MAGIC   fuera de orden.
+# MAGIC   entra intacto. Los datos tardíos se simulan entregando un día fuera de orden (o un
+# MAGIC   reenvío): plata los absorbe con `MERGE` y oro recalcula la fecha afectada.
 # MAGIC - **Atomicidad por subida única.** Los Volumes viven en almacenamiento de objetos: no hay
 # MAGIC   "renombrar" (un `mv` es copiar + borrar), pero **subir un objeto es atómico**: quien lo lee
 # MAGIC   lo ve completo o no lo ve. El archivo se arma en el disco local del driver (descarga +

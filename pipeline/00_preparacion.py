@@ -457,7 +457,7 @@ else:
 # MAGIC
 # MAGIC   **Resultado tras reconstruir** (la franja de 3 anillos se mide contra cualquier agua: mar,
 # MAGIC   lago o río): máscara de 2 099 026 celdas (antes 3 207 452) y **109 897 filas "en tierra"
-# MAGIC   (1,25 %), 484 buques** en el 2023-06-01. Detalle en `BITACORA.md`.
+# MAGIC   (1,25 %), 484 buques** en el 2023-06-01.
 # MAGIC - **Por qué la versión incluye los parámetros:** cambiar un `k` o una región al calibrar
 # MAGIC   cambia la versión y fuerza la reconstrucción, sin intervención manual.
 # MAGIC - **Por qué en mosaicos de 5°:** cada capa de Natural Earth trae pocos multipolígonos enormes

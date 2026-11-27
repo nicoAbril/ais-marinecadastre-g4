@@ -26,7 +26,7 @@
 # MAGIC | **Salida** | `gold.trayectorias_puntos` | Cada posición con su punto anterior, distancia, velocidad implícita y viaje |
 # MAGIC | **Salida** | `gold.trayectorias_diarias` | Un viaje por fila: `(MMSI_Real, fecha, Trip_ID)` |
 # MAGIC | **Salida** | `gold.trafico_celda_hora` | Buques, posiciones y SOG por celda H3 res 5, hora y categoría |
-# MAGIC | **Salida** | `gold.presencia_puertos` | Un buque en un puerto en un día, con arribos y zarpes |
+# MAGIC | **Salida** | `gold.presencia_puertos` | Un buque de visita en un puerto en un día, con sus arribos |
 # MAGIC | **Salida** | `gold.visitas_puerto` (vista) | Visitas completas reconstruidas uniendo días |
 # MAGIC
 # MAGIC **Parámetros:** `catalogo`; `recalcular_todo` (`false` por defecto; `true` recalcula todas
@@ -58,6 +58,10 @@
 # MAGIC   visita puede durar días y recalcularla obligaría a una cascada sin límite. Cada día
 # MAGIC   depende solo de sí mismo y del anterior. Las visitas completas se reconstruyen en una vista
 # MAGIC   (*gaps and islands*), que nunca queda desactualizada.
+# MAGIC - **Arribo = estancia en el área + detención + histéresis**, no transición del estado
+# MAGIC   "detenido en el área": ese estado parpadea con la velocidad (sección 6). Sin `zarpes`:
+# MAGIC   confirmar una salida exige saber que el buque no vuelve en 1 h, es decir, mirar el día
+# MAGIC   siguiente, que no se recalcula cuando cambia este.
 # MAGIC - **Lectura de una tabla recién escrita como "caché".** Serverless no permite `cache()`:
 # MAGIC   `trayectorias_puntos` se escribe primero y las demás tablas la leen de Delta en vez de
 # MAGIC   recalcular las ventanas.
@@ -179,17 +183,17 @@ CREATE TABLE IF NOT EXISTS {T_PRESENCIA} (
     MMSI_Real           STRING    NOT NULL COMMENT 'MMSI + H3_Macro',
     MMSI                STRING    NOT NULL COMMENT 'Identificador del buque',
     VesselType          INT                COMMENT 'Código AIS de tipo de buque',
-    primera_ts          TIMESTAMP          COMMENT 'Primer reporte en puerto en el día (nulo si solo hubo zarpe)',
-    ultima_ts           TIMESTAMP          COMMENT 'Último reporte en puerto en el día',
-    posiciones          BIGINT    NOT NULL COMMENT 'Reportes en puerto en el día',
-    horas_en_puerto     DOUBLE    NOT NULL COMMENT 'Suma de intervalos ≤ 1 h entre reportes consecutivos en el mismo puerto',
-    arribos             BIGINT    NOT NULL COMMENT 'Entradas al puerto en el día (el reporte anterior estaba fuera de este puerto)',
-    zarpes              BIGINT    NOT NULL COMMENT 'Salidas del puerto en el día (el reporte anterior estaba en este puerto)',
-    presente_al_inicio  BOOLEAN   NOT NULL COMMENT 'Primer reporte conocido del buque ya en puerto: estaba ahí antes de los datos (no es arribo)',
+    primera_ts          TIMESTAMP NOT NULL COMMENT 'Primer reporte de la visita en el área del puerto en el día',
+    ultima_ts           TIMESTAMP NOT NULL COMMENT 'Último reporte de la visita en el área del puerto en el día',
+    posiciones          BIGINT    NOT NULL COMMENT 'Reportes en el área del puerto durante visitas, en el día',
+    posiciones_detenido BIGINT    NOT NULL COMMENT 'De esos, reportes detenidos (Status fondeado/amarrado o SOG < 1 nudo)',
+    horas_en_puerto     DOUBLE    NOT NULL COMMENT 'Suma de intervalos ≤ 1 h entre reportes consecutivos de una visita',
+    arribos             BIGINT    NOT NULL COMMENT 'Visitas nuevas cuya primera detención ocurre en el día (llegada efectiva)',
+    presente_al_inicio  BOOLEAN   NOT NULL COMMENT 'La visita empezó sin reporte anterior del buque (ni ese día ni la víspera): ya estaba en puerto, no es arribo',
     _version_silver     TIMESTAMP NOT NULL COMMENT '_calculado_ts de plata con que se construyó esta fecha'
 )
 CLUSTER BY (fecha, wpi_id)
-COMMENT 'Presencia diaria de buques en puertos. En puerto = dentro de {config.PUERTO_K_ANILLOS} anillos H3 res {config.PUERTO_RES_H3} del punto del WPI (puerto más cercano) y (Status fondeado/amarrado o SOG < {config.EN_PUERTO_SOG_MAX} nudo). Base de buques en puerto, ranking y arribos para ML.'
+COMMENT 'Presencia diaria de buques en puertos. Visita = estancia en el área del puerto ({config.PUERTO_K_ANILLOS} anillos H3 res {config.PUERTO_RES_H3} alrededor del punto del WPI, puerto más cercano) con al menos un reporte detenido (Status fondeado/amarrado o SOG < {config.EN_PUERTO_SOG_MAX} nudo); salir y volver en menos de {config.PUERTO_REGRESO_MAX_H} h es la misma visita. Base de buques en puerto, ranking y arribos para ML.'
 """)
 print("Contratos declarados.")
 
@@ -369,16 +373,37 @@ if FECHAS:
 # MAGIC %md
 # MAGIC ## 6. `presencia_puertos`
 # MAGIC
+# MAGIC Separa **dónde está** el buque (el área del puerto, estable) de **qué hace** (detenido o
+# MAGIC no, ruidoso). La Entrega 1 y la primera versión de esta tabla detectaban la transición
+# MAGIC sobre el estado "detenido en el área": la velocidad oscila alrededor de 1 nudo y el estado
+# MAGIC parpadea. Medido el 2023-06-01:
+# MAGIC
+# MAGIC | Regla | Arribos | Máximo por buque y puerto |
+# MAGIC |---|---|---|
+# MAGIC | Entrega 1: `Status` 1/5 o nulo, transición del estado | 4 314 | 209 |
+# MAGIC | Estado "detenido en el área" (`Status` 1/5 o `SOG` < 1) | 33 182 | 172 |
+# MAGIC | A · entrar al área del puerto | 18 969 | |
+# MAGIC | B · estancia en el área con algún reporte detenido | 9 188 | |
+# MAGIC | **C · B + volver en < 1 h es la misma visita (implementada)** | **5 526** | **10 (ferris)** |
+# MAGIC
 # MAGIC 1. **Área de cada puerto** (Entrega 1): el punto del WPI en H3 res 8 y un anillo de 5
 # MAGIC    celdas; si dos puertos comparten una celda, queda el más cercano.
-# MAGIC 2. **En puerto:** en el área y (`Status` fondeado/amarrado o `SOG` < 1 nudo).
-# MAGIC 3. **Eventos** comparando con el reporte anterior del mismo buque (que puede ser de la
-# MAGIC    víspera): `arribo` si antes estaba fuera de este puerto; `zarpe` si antes estaba en un
-# MAGIC    puerto y ahora no (o en otro). Si el buque no tiene reporte anterior y ya está en puerto,
-# MAGIC    es `presente_al_inicio`: estaba ahí antes de los datos, no es un arribo (importante para
-# MAGIC    no inflar los arribos del primer día en el modelo de ML).
-# MAGIC 4. **Horas en puerto:** suma de los intervalos entre reportes consecutivos en el mismo puerto
-# MAGIC    de hasta 1 h (un silencio más largo no se cuenta como tiempo observado en puerto).
+# MAGIC 2. **Estancia:** tramo de reportes consecutivos del buque dentro del área de un mismo
+# MAGIC    puerto. Empieza al entrar al área y termina al salir (técnica `lag` + suma acumulada de
+# MAGIC    la Entrega 1, aplicada a la geocerca).
+# MAGIC 3. **Visita:** una estancia con al menos un reporte detenido (`Status` fondeado/amarrado o
+# MAGIC    `SOG` < 1 nudo). Una estancia sin ninguno es un buque que pasa de largo.
+# MAGIC 4. **Histéresis:** si el buque sale y vuelve al mismo puerto en menos de
+# MAGIC    `PUERTO_REGRESO_MAX_H` (1 h), es la misma visita.
+# MAGIC 5. **Arribo:** el momento en que una visita nueva se detiene por primera vez (llegada
+# MAGIC    efectiva). Se cuenta en esa fecha. Si la estancia empezó sin reporte anterior del buque
+# MAGIC    (ni ese día ni la víspera), es `presente_al_inicio`: ya estaba ahí, no es un arribo.
+# MAGIC 6. **Horas en puerto:** suma de los intervalos de hasta 1 h entre reportes consecutivos de
+# MAGIC    una visita (un silencio más largo no se cuenta como tiempo observado).
+# MAGIC
+# MAGIC **Alcance de la víspera:** se cargan D-1 y D. Una estancia que empezó antes de D-1 se ve
+# MAGIC desde el inicio de D-1; solo afecta a un buque que se detuvo antes de D-1, navegó dentro del
+# MAGIC área todo D-1 sin detenerse y se detuvo otra vez en D (caso no observado).
 
 # COMMAND ----------
 
@@ -393,59 +418,81 @@ if FECHAS:
         .filter(f.col("_rn") == 1)
         .select("h8", "wpi_id")
     )
-    en_puerto = (
-        f.col("wpi_id").isNotNull()
-        & (f.col("Status").isin(*config.EN_PUERTO_STATUS) | (f.col("SOG") < config.EN_PUERTO_SOG_MAX))
+    detenido = f.coalesce(
+        f.col("Status").isin(*config.EN_PUERTO_STATUS) | (f.col("SOG") < config.EN_PUERTO_SOG_MAX),
+        f.lit(False),
     )
-    eventos = (
+    # (a) Estancias: transición de área sobre todos los reportes del buque.
+    con_area = (
         spark.table(T_PUNTOS).filter(f.col("fecha").isin(FECHAS_CARGA))
         .withColumn("h8", dbf.h3_longlatash3("LON", "LAT", config.PUERTO_RES_H3))
         .join(f.broadcast(area), "h8", "left")
-        .withColumn("puerto", f.when(f.coalesce(en_puerto, f.lit(False)), f.col("wpi_id")))
-        .withColumn("prev_puerto", f.lag("puerto").over(w_buque))
+        .withColumn("detenido", detenido)
+        .withColumn("prev_area", f.lag("wpi_id").over(w_buque))
         .withColumn("tiene_prev", f.lag("BaseDateTime").over(w_buque).isNotNull())
-        .withColumn("arribo", f.col("puerto").isNotNull() & f.col("tiene_prev")
-                    & (f.col("prev_puerto").isNull() | (f.col("prev_puerto") != f.col("puerto"))))
-        .withColumn("presente_al_inicio", f.col("puerto").isNotNull() & ~f.col("tiene_prev"))
-        .withColumn("zarpe_de", f.when(
-            f.col("prev_puerto").isNotNull()
-            & (f.col("puerto").isNull() | (f.col("puerto") != f.col("prev_puerto"))),
-            f.col("prev_puerto")))
+        .withColumn("entra", (f.col("wpi_id").isNotNull()
+                              & (f.col("prev_area").isNull() | (f.col("prev_area") != f.col("wpi_id")))).cast("int"))
+        .withColumn("estancia", f.sum("entra").over(
+            w_buque.rowsBetween(Window.unboundedPreceding, Window.currentRow)))
+        .filter(f.col("wpi_id").isNotNull())
+    )
+    # (b) Dentro de cada estancia: ¿es visita?, ¿cuándo se detuvo por primera vez?
+    w_est = Window.partitionBy("MMSI_Real", "estancia")
+    w_est_ord = w_est.orderBy("BaseDateTime")
+    w_est_acum = w_est_ord.rowsBetween(Window.unboundedPreceding, Window.currentRow)
+    estancias = (
+        con_area
+        .withColumn("es_visita", f.max("detenido").over(w_est))
+        .filter(f.col("es_visita"))
+        .withColumn("estancia_inicio", f.min("BaseDateTime").over(w_est))
+        .withColumn("inicio_con_prev", f.min_by("tiene_prev", "BaseDateTime").over(w_est))
+        .withColumn("detenido_acum", f.max("detenido").over(w_est_acum))
+        .withColumn("primera_detencion",
+                    f.col("detenido") & ~f.coalesce(f.lag("detenido_acum").over(w_est_ord), f.lit(False)))
+        .withColumn("prev_ts_estancia", f.lag("BaseDateTime").over(w_est_ord))
+    )
+    # (c) Histéresis: fin de la visita anterior del buque en el mismo puerto. Aquí solo quedan
+    #     estancias que son visitas; en la primera fila de cada estancia, la fila anterior del
+    #     mismo (buque, puerto) es el último reporte de la visita anterior. Se propaga a la estancia.
+    w_puerto = Window.partitionBy("MMSI_Real", "wpi_id").orderBy("BaseDateTime")
+    eventos = (
+        estancias
+        .withColumn("_fin_anterior", f.when(
+            f.col("prev_ts_estancia").isNull(), f.lag("BaseDateTime").over(w_puerto)))
+        .withColumn("fin_visita_anterior", f.max("_fin_anterior").over(w_est))
+        .withColumn("nueva_visita", f.col("primera_detencion") & (
+            f.col("fin_visita_anterior").isNull()
+            | ((f.col("estancia_inicio").cast("long") - f.col("fin_visita_anterior").cast("long")) / 3600.0
+               > config.PUERTO_REGRESO_MAX_H)))
+        .withColumn("arribo", f.col("nueva_visita") & f.col("inicio_con_prev"))
+        .withColumn("presente_al_inicio", f.col("nueva_visita") & ~f.col("inicio_con_prev"))
+        # El primer reporte de la estancia no suma: su intervalo viene de fuera del área.
         .withColumn("horas_aporte", f.when(
-            (f.col("puerto") == f.col("prev_puerto")) & (f.col("horas_desde_prev") <= 1),
+            f.col("prev_ts_estancia").isNotNull() & (f.col("horas_desde_prev") <= 1),
             f.col("horas_desde_prev")).otherwise(0.0))
         .filter(f.col("fecha").isin(FECHAS))
     )
     llave = ["fecha", "wpi_id", "MMSI_Real", "MMSI"]
-    en_puerto_dia = (
-        eventos.filter(f.col("puerto").isNotNull())
-        .groupBy("fecha", f.col("puerto").alias("wpi_id"), "MMSI_Real", "MMSI")
+    puertos = spark.table(T_PUERTOS).select("wpi_id", "nombre_puerto", "pais")
+    presencia = (
+        eventos
+        .groupBy(*llave)
         .agg(
             f.max_by("VesselType", "BaseDateTime").alias("VesselType"),
             f.min("BaseDateTime").alias("primera_ts"),
             f.max("BaseDateTime").alias("ultima_ts"),
             f.count("*").alias("posiciones"),
+            f.count(f.when(f.col("detenido"), 1)).alias("posiciones_detenido"),
             f.sum("horas_aporte").alias("horas_en_puerto"),
             f.count(f.when(f.col("arribo"), 1)).alias("arribos"),
             f.max("presente_al_inicio").alias("presente_al_inicio"),
         )
-    )
-    zarpes_dia = (
-        eventos.filter(f.col("zarpe_de").isNotNull())
-        .groupBy("fecha", f.col("zarpe_de").alias("wpi_id"), "MMSI_Real", "MMSI")
-        .agg(f.count("*").alias("zarpes"), f.max_by("VesselType", "BaseDateTime").alias("vt_zarpe"))
-    )
-    puertos = spark.table(T_PUERTOS).select("wpi_id", "nombre_puerto", "pais")
-    presencia = (
-        en_puerto_dia.join(zarpes_dia, llave, "full")
-        .withColumn("VesselType", f.coalesce("VesselType", "vt_zarpe"))
-        .fillna({"posiciones": 0, "horas_en_puerto": 0.0, "arribos": 0, "zarpes": 0, "presente_al_inicio": False})
         .join(f.broadcast(puertos), "wpi_id", "left")
         .join(versiones_df, "fecha")
         .select(
             "fecha", f.col("wpi_id").cast("int").alias("wpi_id"), "nombre_puerto", "pais",
             "MMSI_Real", "MMSI", "VesselType", "primera_ts", "ultima_ts", "posiciones",
-            "horas_en_puerto", "arribos", "zarpes", "presente_al_inicio", "_version_silver",
+            "posiciones_detenido", "horas_en_puerto", "arribos", "presente_al_inicio", "_version_silver",
         )
     )
     escribir_fechas(presencia, T_PRESENCIA)
@@ -458,8 +505,8 @@ if FECHAS:
 # MAGIC Une los días de presencia de un mismo buque en un mismo puerto en visitas (*gaps and
 # MAGIC islands*): cada arribo (o la presencia al inicio de los datos) abre una visita nueva, que
 # MAGIC acumula los días siguientes hasta el próximo arribo. Al ser vista, se calcula al consultarla
-# MAGIC y nunca queda desactualizada. Limitación: dos visitas al mismo puerto en el mismo día se
-# MAGIC cuentan como una.
+# MAGIC y nunca queda desactualizada. Limitación: dos visitas al mismo puerto en el mismo día (p. ej.
+# MAGIC un ferri) quedan en una fila con `arribos_en_el_primer_dia` > 1.
 
 # COMMAND ----------
 
@@ -476,7 +523,7 @@ WITH marcada AS (
 SELECT MMSI_Real, MMSI, wpi_id, nombre_puerto, pais, visita_n,
        MIN(primera_ts)                    AS entrada,
        MAX(ultima_ts)                     AS ultimo_reporte_en_puerto,
-       MAX(zarpes) > 0                    AS cerrada,
+       MIN_BY(arribos, fecha)             AS arribos_en_el_primer_dia,
        SUM(horas_en_puerto)               AS horas_en_puerto,
        COUNT(*)                           AS dias,
        BOOL_OR(presente_al_inicio)        AS empezo_antes_de_los_datos
@@ -537,3 +584,51 @@ if FECHAS:
               "fecha", "left")
         .orderBy("fecha").show(truncate=False)
     )
+
+    # Arribos por buque y puerto: sin parpadeo, el máximo debe ser plausible (ferris, ~10/día).
+    print("Distribución de arribos por (buque, puerto, día):")
+    (
+        spark.table(T_PRESENCIA).filter(f.col("fecha").isin(FECHAS))
+        .groupBy(f.least(f.col("arribos"), f.lit(6)).alias("arribos (6 = 6 o más)"))
+        .agg(f.count("*").alias("buque_puerto_dia"), f.sum("arribos").alias("total_arribos"))
+        .orderBy(1).show()
+    )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Chequeo de salud del pipeline (monitoreo)
+# MAGIC
+# MAGIC Última celda de la última tarea del job: revisa **todas** las fechas, no solo las recalculadas.
+# MAGIC Si un chequeo duro falla, la tarea falla y el job notifica; los datos ya escritos no se
+# MAGIC tocan (todas las escrituras son idempotentes, el reintento no duplica nada).
+# MAGIC
+# MAGIC | Chequeo | Tipo | Qué detecta |
+# MAGIC |---|---|---|
+# MAGIC | `duplicados_descartados` ≥ 0 | duro | Plata o cuarentena con filas que no vienen de bronce |
+# MAGIC | Posiciones de oro = filas de plata, por fecha | duro | El supuesto "fecha del archivo = fecha de `BaseDateTime`" dejó de cumplirse, o una fecha quedó a medias |
+# MAGIC | `filas_esquema_rescatado` > 0 | aviso | La fuente cambió de esquema: hay valores en `_rescued_data` que plata no usa |
+
+# COMMAND ----------
+
+metricas = (
+    spark.table(T_METRICAS).groupBy("fecha").pivot(
+        "metrica", ["filas_recibidas", "filas_silver", "duplicados_descartados", "filas_esquema_rescatado"]
+    ).agg(f.first("valor"))
+)
+salud = (
+    metricas
+    .join(spark.table(T_PUNTOS).groupBy("fecha").agg(f.count("*").alias("filas_oro")), "fecha", "left")
+    .fillna(0, subset=["filas_oro", "filas_esquema_rescatado"])
+    .orderBy("fecha")
+)
+salud.show(truncate=False)
+
+malas = salud.filter(
+    (f.col("duplicados_descartados") < 0) | (f.col("filas_oro") != f.col("filas_silver"))
+).collect()
+rescatadas = salud.agg(f.sum("filas_esquema_rescatado")).first()[0] or 0
+if rescatadas:
+    print(f"AVISO: {rescatadas:,} filas con columnas fuera del esquema (_rescued_data). Revisar la fuente.")
+assert not malas, f"Chequeo de salud fallido en las fechas {[str(r.fecha) for r in malas]}"
+print(f"Chequeo de salud OK: {salud.count()} fecha(s).")
